@@ -1,0 +1,7 @@
+# List of dependencies to pin for Docker and environments:
+
+fastapi
+uvicorn[standard]
+python-dotenv
+pydantic
+httpx
