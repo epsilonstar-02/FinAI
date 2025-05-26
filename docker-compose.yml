@@ -10,6 +10,15 @@ services:
     env_file:
       - .env
 
+  scraping_agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.scraping
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env
+
   streamlit:
     build:
       context: .
@@ -20,3 +29,4 @@ services:
       - .env
     depends_on:
       - api_agent
+      - scraping_agent
