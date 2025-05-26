@@ -1,13 +1,12 @@
+from datetime import date, datetime
+
 import pytest
 import respx
 from httpx import Response
-from agents.api_agent.client import (
-    fetch_current_price,
-    fetch_historical,
-    APIClientError,
-)
+
+from agents.api_agent.client import (APIClientError, fetch_current_price,
+                                     fetch_historical)
 from agents.api_agent.config import settings
-from datetime import datetime, date
 
 # Base URL for mocking
 BASE_URL = settings.BASE_URL
