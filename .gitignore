@@ -49,6 +49,49 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+
+# Environment variables
+.env
+
+# Docker
+.dockerignore
+Dockerfile*
+docker-compose*.yml
+
+# Data directories
+/data/
+!/data/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Local development
+.venv/
+venv/
+ENV/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Local development settings
+local_settings.py
+
+# Vector stores
+*.faiss
+*.pkl
+*.bin
+*.index
 cover/
 
 # Translations

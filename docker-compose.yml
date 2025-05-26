@@ -18,6 +18,23 @@ services:
       - "8002:8002"
     env_file:
       - .env
+      
+  retriever-agent:
+    build:
+      context: ../../
+      dockerfile: Dockerfile.retriever
+    ports:
+      - "8003:8001"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - ./.env
+    environment:
+      - EMBEDDING_MODEL=all-MiniLM-L6-v2
+      - VECTOR_STORE_PATH=/app/data/vector_store
+      - HOST=0.0.0.0
+      - PORT=8001
+    restart: unless-stopped
 
   streamlit:
     build:
@@ -30,3 +47,4 @@ services:
     depends_on:
       - api_agent
       - scraping_agent
+      - retriever_agent

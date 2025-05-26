@@ -1,3 +1,4 @@
+# Core dependencies
 sentence-transformers>=2.2.2
 faiss-cpu>=1.7.4  # or faiss-gpu if CUDA is available
 numpy>=1.24.0
@@ -5,3 +6,14 @@ pydantic>=2.0.0
 pydantic-settings>=2.0.0
 fastapi>=0.100.0
 python-dotenv>=1.0.0
+uvicorn>=0.23.0
+httpx>=0.24.0
+
+# Additional utilities
+uuid>=0.1.0
+json5>=0.9.10  # For more robust JSON handling
+loguru>=0.7.0  # Better logging (alternative to standard logging)
+
+# For testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
