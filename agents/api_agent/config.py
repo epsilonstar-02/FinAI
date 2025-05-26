@@ -1,6 +1,8 @@
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
+
 
 class Settings:
     # Base URL for the market data API
@@ -9,5 +11,6 @@ class Settings:
     API_KEY: str = os.getenv("ALPHAVANTAGE_KEY", "")
     # HTTP timeout (seconds)
     TIMEOUT: int = int(os.getenv("TIMEOUT", 5))
+
 
 settings = Settings()
