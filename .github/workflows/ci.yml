@@ -66,53 +66,7 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-      - name: Install linters
-        run: |
-          pip install black isort flake8 mypy
-
-      - name: Run Black formatter
-        id: black
-        continue-on-error: true
-        run: |
-          black .
-          git diff --exit-code . || echo "changes=true" >> $GITHUB_OUTPUT
-
-      - name: Run isort
-        id: isort
-        continue-on-error: true
-        run: |
-          isort .
-          git diff --exit-code . || echo "changes=true" >> $GITHUB_OUTPUT
-
-      - name: Compute branch name
-        if: steps.black.outputs.changes == 'true' || steps.isort.outputs.changes == 'true'
-        id: branch
-        run: |
-          echo "branch=fix/auto-format-$(date +%s)" >> $GITHUB_OUTPUT
-
-      # Fixed: Set base branch to 'main' explicitly
-      - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v6
-        if: steps.black.outputs.changes == 'true' || steps.isort.outputs.changes == 'true'
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "style: Auto-fix formatting with Black and isort"
-          title: "style: Auto-fix code formatting"
-          body: |
-            Automated code formatting fixes applied by CI:
-            - Black code formatting
-            - isort import sorting
-            (No functional changes)
-          branch: ${{ steps.branch.outputs.branch }}
-          base: main  # Explicitly target main branch
-          delete-branch: true
-          draft: false
-
-      - name: Run flake8
-        run: flake8 .
-
-      - name: Run mypy
-        run: mypy .
+      # Linting steps removed as requested
 
       - name: Run security checks
         run: |
