@@ -1,7 +1,8 @@
 # Pydantic Schemas
 from datetime import date, datetime
-from pydantic import BaseModel, Field
 from typing import List
+
+from pydantic import BaseModel, Field
 
 
 # Input schema for /price endpoint

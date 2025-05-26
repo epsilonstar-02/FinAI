@@ -1,13 +1,12 @@
-import pytest
-from fastapi.testclient import TestClient
-from fastapi import status
-from agents.api_agent.main import app
-from agents.api_agent.client import (
-    fetch_current_price,
-    fetch_historical,
-    APIClientError,
-)
 from datetime import datetime
+
+import pytest
+from fastapi import status
+from fastapi.testclient import TestClient
+
+from agents.api_agent.client import (APIClientError, fetch_current_price,
+                                     fetch_historical)
+from agents.api_agent.main import app
 
 
 # --- Fixtures to monkeypatch client calls ---

@@ -1,8 +1,10 @@
 # Encapsulates HTTP calls to the upstream API, with error handling and retries.
 
-import httpx
-from .config import settings
 from datetime import datetime
+
+import httpx
+
+from .config import settings
 
 
 class APIClientError(Exception):

@@ -1,10 +1,12 @@
 # Sets up FastAPI app, includes routes, exception handlers, and docs.
 
-from fastapi import FastAPI, HTTPException, Depends
-from .models import PriceRequest, PriceResponse, HistoricalRequest, HistoricalResponse
-from .client import fetch_current_price, fetch_historical, APIClientError
-from .config import settings
 import uvicorn
+from fastapi import Depends, FastAPI, HTTPException
+
+from .client import APIClientError, fetch_current_price, fetch_historical
+from .config import settings
+from .models import (HistoricalRequest, HistoricalResponse, PriceRequest,
+                     PriceResponse)
 
 app = FastAPI(title="API Agent", version="0.1.0")
 
