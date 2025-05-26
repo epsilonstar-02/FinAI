@@ -7,7 +7,7 @@ on:
   pull_request:
     branches: [ main ]
   schedule:
-    - cron: '0 0 * * 0' # Weekly scheduled runs
+    - cron: '0 0 * * 0'  # Weekly run on Sundays at 00:00 UTC
 
 defaults:
   run:
@@ -26,7 +26,8 @@ jobs:
     env:
       PYTHON_VERSION: ${{ matrix.python-version }}
       PYTHONPATH: ${{ github.workspace }}
-      ALPHAVANTAGE_API_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY || 'test-key' }}
+      # Align with config.py: ALPHAVANTAGE_KEY
+      ALPHAVANTAGE_KEY: ${{ secrets.ALPHAVANTAGE_API_KEY || 'test-key' }}
 
     steps:
       - name: Checkout code
@@ -53,9 +54,10 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements-api.txt
           pip install -r streamlit_app/requirements-streamlit.txt
+          # Install your test requirements
           pip install -r tests/requirements-test.txt
 
-      - name: Set up Git identity
+      - name: Set up Git identity (for auto-PRs)
         if: github.event_name == 'pull_request'
         run: |
           git config --global user.name 'github-actions[bot]'
@@ -64,44 +66,51 @@ jobs:
       - name: Install linters
         run: |
           pip install black isort flake8 mypy
-          
+
+      # Run Black and capture whether it made changes
       - name: Run Black formatter
         id: black
         continue-on-error: true
         run: |
           black .
           git diff --exit-code . || echo "changes=true" >> $GITHUB_OUTPUT
-          
+
+      # Run isort and capture whether it made changes
       - name: Run isort
         id: isort
         continue-on-error: true
         run: |
           isort .
           git diff --exit-code . || echo "changes=true" >> $GITHUB_OUTPUT
-          
+
+      # Compute a timestamped branch name if formatting changed
+      - name: Compute branch name
+        if: steps.black.outputs.changes == 'true' || steps.isort.outputs.changes == 'true'
+        id: branch
+        run: |
+          echo "branch=fix/auto-format-$(date +%s)" >> $GITHUB_OUTPUT
+
+      # Create an auto-PR with the formatting fixes
       - name: Create Pull Request
-        id: create-pr
         uses: peter-evans/create-pull-request@v6
-        if: >
-          (steps.black.outputs.changes == 'true' || steps.isort.outputs.changes == 'true') && 
-          (github.event_name == 'push' || github.event_name == 'pull_request')
+        if: steps.black.outputs.changes == 'true' || steps.isort.outputs.changes == 'true'
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: "style: Auto-fix formatting with Black and isort"
           title: "style: Auto-fix code formatting"
           body: |
-            Automated code formatting fixes:
-            - Applied Black code formatting
-            - Sorted imports with isort
-            - No functional changes
-          branch: "fix/auto-format-$(date +%s)"
+            Automated code formatting fixes applied by CI:
+            - Black code formatting
+            - isort import sorting
+            (No functional changes)
+          branch: ${{ steps.branch.outputs.branch }}
           base: ${{ github.head_ref || github.ref_name }}
           delete-branch: true
           draft: false
-          
+
       - name: Run flake8
         run: flake8 .
-        
+
       - name: Run mypy
         run: mypy .
 
