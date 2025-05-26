@@ -69,7 +69,7 @@ jobs:
 
       - name: Install linters
         run: |
-          pip install black isort flake8 mypy
+          pip install black isort flake8 flake8-black flake8-isort mypy
 
       # Run Black and capture whether it made changes
       - name: Run Black formatter
@@ -112,8 +112,10 @@ jobs:
           delete-branch: true
           draft: false
 
-      - name: Run flake8
-        run: flake8 .
+      - name: Run flake8 with Black compatibility
+        run: |
+          # Run flake8 with Black-compatible settings
+          flake8 .
 
       - name: Run mypy
         run: mypy .
