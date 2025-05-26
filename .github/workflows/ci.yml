@@ -49,16 +49,52 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
-            python3-dev
+            python3-dev \
+            python3-venv \
+            libxml2-dev \
+            libxslt1-dev \
+            zlib1g-dev \
+            libjpeg-dev \
+            libpng-dev \
+            libtiff-dev \
+            libwebp-dev \
+            libopenjp2-7-dev \
+            libpq-dev \
+            libssl-dev \
+            libffi-dev \
+            cargo  # Required for some Rust-based Python packages
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          # Install module-specific requirements
-          pip install -r agents/api_agent/requirements.txt
-          pip install -r agents/scraping_agent/requirements-scraping.txt
-          pip install -r streamlit_app/requirements-streamlit.txt
-          pip install -r tests/requirements-test.txt
+          
+          # Install base requirements
+          pip install --no-cache-dir -r requirements.txt
+          
+          # Install API agent requirements
+          if [ -f "agents/api_agent/requirements-api.txt" ]; then
+              pip install --no-cache-dir -r agents/api_agent/requirements-api.txt
+          fi
+          
+          # Install scraping agent requirements
+          if [ -f "agents/scraping_agent/requirements-scraping.txt" ]; then
+              pip install --no-cache-dir -r agents/scraping_agent/requirements-scraping.txt
+          fi
+          
+          # Install test requirements
+          if [ -f "tests/requirements-test.txt" ]; then
+              pip install --no-cache-dir -r tests/requirements-test.txt
+          fi
+          
+          # Install Streamlit requirements if the directory exists
+          if [ -f "streamlit_app/requirements-streamlit.txt" ]; then
+              pip install --no-cache-dir -r streamlit_app/requirements-streamlit.txt
+          fi
+          
+          # Install any additional requirements that might be needed
+          if [ -f "requirements-api.txt" ]; then
+              pip install --no-cache-dir -r requirements-api.txt
+          fi
 
       # Fixed: Always set Git identity (removed pull_request condition)
       - name: Set up Git identity
