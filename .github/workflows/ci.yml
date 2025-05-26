@@ -55,13 +55,55 @@ jobs:
           pip install -r streamlit_app/requirements-streamlit.txt
           pip install -r tests/requirements-test.txt
 
-      - name: Run linters
+      - name: Set up Git identity
+        if: github.event_name == 'pull_request'
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Install linters
         run: |
           pip install black isort flake8 mypy
-          black --check .
-          isort --check-only .
-          flake8 .
-          mypy .
+          
+      - name: Run Black formatter
+        id: black
+        continue-on-error: true
+        run: |
+          black .
+          git diff --exit-code . || echo "changes=true" >> $GITHUB_OUTPUT
+          
+      - name: Run isort
+        id: isort
+        continue-on-error: true
+        run: |
+          isort .
+          git diff --exit-code . || echo "changes=true" >> $GITHUB_OUTPUT
+          
+      - name: Create Pull Request
+        id: create-pr
+        uses: peter-evans/create-pull-request@v6
+        if: >
+          (steps.black.outputs.changes == 'true' || steps.isort.outputs.changes == 'true') && 
+          (github.event_name == 'push' || github.event_name == 'pull_request')
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "style: Auto-fix formatting with Black and isort"
+          title: "style: Auto-fix code formatting"
+          body: |
+            Automated code formatting fixes:
+            - Applied Black code formatting
+            - Sorted imports with isort
+            - No functional changes
+          branch: "fix/auto-format-$(date +%s)"
+          base: ${{ github.head_ref || github.ref_name }}
+          delete-branch: true
+          draft: false
+          
+      - name: Run flake8
+        run: flake8 .
+        
+      - name: Run mypy
+        run: mypy .
 
       - name: Run security checks
         run: |
