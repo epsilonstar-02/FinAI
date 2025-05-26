@@ -5,7 +5,7 @@ from typing import List
 
 # Input schema for /price endpoint
 class PriceRequest(BaseModel):
-    symbol: str = Field(..., min_length=1, max_length=5, regex="^[A-Z]+$")
+    symbol: str = Field(..., min_length=1, max_length=5, pattern="^[A-Z]+$")
 
 # Output schema for /price endpoint
 class PriceResponse(BaseModel):
@@ -28,6 +28,6 @@ class HistoricalResponse(BaseModel):
 
 # Input schema for /historical endpoint
 class HistoricalRequest(BaseModel):
-    symbol: str = Field(..., min_length=1, max_length=5, regex="^[A-Z]+$")
+    symbol: str = Field(..., min_length=1, max_length=5, pattern="^[A-Z]+$")
     start: date
     end: date
