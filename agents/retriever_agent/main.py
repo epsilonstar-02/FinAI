@@ -50,8 +50,19 @@ app.add_middleware(
 @app.middleware("http")
 async def add_process_time_header(request: Request, call_next):
     global last_cleanup_time
-    # Rate limiting check
-    client_ip = request.client.host
+    
+    # Get client IP, checking X-Forwarded-For header first if present
+    client_ip = None
+    if 'x-forwarded-for' in request.headers:
+        # Get the first IP in the X-Forwarded-For list
+        client_ip = request.headers['x-forwarded-for'].split(',')[0].strip()
+    elif request.client is not None:
+        client_ip = request.client.host
+    
+    # Skip rate limiting if we can't determine the client IP
+    if not client_ip:
+        response = await call_next(request)
+        return response
     current_time = time.time()
     
     # Clean up old rate limit data periodically
@@ -220,11 +231,14 @@ async def retrieve_documents(request: QueryRequest):
 
 # Document deletion endpoint
 @app.delete("/documents", tags=["Documents"])
-async def delete_documents(document_ids: List[str] = Query(...), namespace: Optional[str] = None):
+async def delete_documents(
+    document_ids: List[str] = Query(..., description="List of document IDs to delete"),
+    namespace: Optional[str] = None
+):
     """
     Delete documents from the vector store by their IDs.
     
-    - **document_ids**: List of document IDs to delete
+    - **document_ids**: List of document IDs to delete (comma-separated in URL)
     - **namespace**: Optional namespace the documents are in
     """
     try:

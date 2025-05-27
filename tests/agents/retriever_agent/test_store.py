@@ -54,7 +54,18 @@ def test_load(mock_exists, mock_json_load, mock_open, mock_read_index, temp_dir)
     mock_index = MagicMock()
     mock_index.d = 384
     mock_read_index.return_value = mock_index
-    mock_json_load.return_value = {"1": {"page_content": "test", "metadata": {}}}
+    
+    # Structured mock data with document_ids
+    mock_json_load.return_value = {
+        "documents": {"1": {"page_content": "test", "metadata": {}}},
+        "document_ids": ["1"],
+        "metadata": {
+            "last_updated": "2023-01-01T00:00:00",
+            "document_count": 1,
+            "dimension": 384,
+            "namespace": "test_namespace"
+        }
+    }
     
     store = VectorStore()
     with patch('agents.retriever_agent.store.settings') as mock_settings:
@@ -65,17 +76,24 @@ def test_load(mock_exists, mock_json_load, mock_open, mock_read_index, temp_dir)
     assert store.index is not None
     assert store.documents == {"1": {"page_content": "test", "metadata": {}}}
 
-@patch('agents.retriever_agent.store.VectorStore.load')
+@patch('agents.retriever_agent.store.faiss.IndexFlatL2')
+@patch('agents.retriever_agent.store.VectorStore.load', return_value=False)
 @patch('agents.retriever_agent.store.VectorStore.save')
-@patch('agents.retriever_agent.embedder.embedder')
-def test_add_documents(mock_embedder, mock_save, mock_load, temp_dir):
+@patch('agents.retriever_agent.store.embedder')
+def test_add_documents(mock_embedder, mock_save, mock_load, mock_faiss, temp_dir):
     """Test adding documents to the vector store."""
     # Setup mocks
     mock_embedder.embed_documents.return_value = [[0.1] * 384] * 2
+    mock_embedder.embed_query.return_value = [0.1] * 384  # Mock embed_query to return correct dimension
     
+    # Create a mock FAISS index with an add method
+    mock_index = MagicMock()
+    mock_faiss.return_value = mock_index
+    
+    # Create store
     store = VectorStore()
-    store.index = MagicMock()
     
+    # Test documents
     documents = [
         Document(page_content="test1", metadata={"source": "test"}),
         Document(page_content="test2", metadata={"source": "test"})
@@ -85,10 +103,20 @@ def test_add_documents(mock_embedder, mock_save, mock_load, temp_dir):
         mock_settings.VECTOR_STORE_PATH = temp_dir
         store.add_documents(documents, "test_namespace")
     
-    # Verify documents were added
+    # Verify the documents were added to the store
     assert len(store.documents) == 2
+    
+    # Verify the save method was called
     assert mock_save.called
-    store.index.add.assert_called_once()
+    
+    # Verify the FAISS index was created with the correct dimension
+    mock_faiss.assert_called_once_with(384)
+    
+    # Verify the embeddings were generated
+    mock_embedder.embed_documents.assert_called_once_with(["test1", "test2"])
+    
+    # Verify the FAISS index's add method was called
+    mock_index.add.assert_called_once()
 
 @patch('agents.retriever_agent.store.VectorStore.load')
 @patch('agents.retriever_agent.embedder.embedder')
@@ -105,6 +133,7 @@ def test_similarity_search(mock_embedder, mock_load, temp_dir):
         "0": {"page_content": "test1", "metadata": {"source": "test"}},
         "1": {"page_content": "test2", "metadata": {"source": "test"}}
     }
+    store.document_ids = ["0", "1"]  # Explicitly set document_ids to match keys
     
     results = store.similarity_search("test query", k=2)
     
@@ -117,6 +146,7 @@ def test_similarity_search(mock_embedder, mock_load, temp_dir):
         "0": {"page_content": "test1", "metadata": {"category": "finance"}},
         "1": {"page_content": "test2", "metadata": {"category": "tech"}}
     }
+    store.document_ids = ["0", "1"]  # Update document_ids after changing documents
     
     results = store.similarity_search("test query", k=2, filter={"category": "tech"})
     
@@ -138,6 +168,7 @@ def test_delete_documents(mock_rebuild_index, mock_load, temp_dir):
         "doc2": {"page_content": "test2", "metadata": {}},
         "doc3": {"page_content": "test3", "metadata": {}}
     }
+    store.document_ids = ["doc1", "doc2", "doc3"]  # Set document_ids to match documents
     
     with patch('agents.retriever_agent.store.VectorStore.save') as mock_save:
         # Delete documents
@@ -179,8 +210,14 @@ def test_rebuild_index(mock_embedder, mock_index_flat, temp_dir):
     # Call the method we're testing
     store._rebuild_index()
     
+    # Verify document_ids was updated
+    assert set(store.document_ids) == {"doc1", "doc2"}
+    
     # Verify the embedder was called with the correct document contents
-    mock_embedder.embed_documents.assert_called_once_with(["test1", "test2"])
+    # The order depends on document_ids which is generated from dict keys
+    mock_embedder.embed_documents.assert_called_once()
+    call_args = mock_embedder.embed_documents.call_args[0][0]
+    assert set(call_args) == {"test1", "test2"}
     
     # Verify a new index was created with the correct dimension
     mock_index_flat.assert_called_once_with(384)  # 384 is the expected dimension

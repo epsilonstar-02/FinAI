@@ -25,10 +25,13 @@ class Settings(BaseSettings):
     PORT: int = 8001
     LOG_LEVEL: str = "info"
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = True
+    # Pydantic v2+ configuration
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",  # Ignore extra fields from env vars meant for other services
+        "case_sensitive": True
+    }
 
 # Create settings instance
 settings = Settings()

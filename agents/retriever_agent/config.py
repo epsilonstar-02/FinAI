@@ -11,9 +11,11 @@ class Settings(BaseSettings):
     # Number of results to return by default
     DEFAULT_TOP_K: int = 5
     
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
+    # Pydantic v2+ configuration
+    model_config = {
+        "env_file": ".env",
+        "extra": "ignore"  # Ignore extra fields from env vars meant for other services
+    }
 
 # Create instance
 settings = Settings()

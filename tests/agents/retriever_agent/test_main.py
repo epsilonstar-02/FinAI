@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from agents.retriever_agent.models import Document, SearchResult
 
-@patch('agents.retriever_agent.store.vector_store')
+@patch('agents.retriever_agent.main.vector_store')
 def test_health_endpoint(mock_store, test_client):
     """Test the health check endpoint."""
     # Setup mock
@@ -20,10 +20,11 @@ def test_health_endpoint(mock_store, test_client):
     
     # Assertions
     assert response.status_code == 200
-    assert response.json()["status"] == "healthy"
-    assert response.json()["vector_store_size"] == 5
+    response_data = response.json()
+    assert response_data["status"] == "healthy"
+    assert response_data["vector_store_size"] == 5
 
-@patch('agents.retriever_agent.store.vector_store')
+@patch('agents.retriever_agent.main.vector_store')
 def test_ingest_endpoint(mock_store, test_client):
     """Test the document ingestion endpoint."""
     # Test data
@@ -42,7 +43,7 @@ def test_ingest_endpoint(mock_store, test_client):
     assert response.json()["status"] == "success"
     assert response.json()["ingested"] == 2
 
-@patch('agents.retriever_agent.store.vector_store')
+@patch('agents.retriever_agent.main.vector_store')
 def test_retrieve_endpoint(mock_store, test_client):
     """Test the document retrieval endpoint."""
     # Setup mock
@@ -63,12 +64,14 @@ def test_retrieve_endpoint(mock_store, test_client):
     
     # Assertions
     assert response.status_code == 200
-    results = response.json()
+    response_data = response.json()
+    assert "results" in response_data
+    results = response_data["results"]
     assert len(results) == 1
     assert results[0]["document"]["page_content"] == "test content"
     assert results[0]["score"] == 0.9
 
-@patch('agents.retriever_agent.store.vector_store')
+@patch('agents.retriever_agent.main.vector_store')
 def test_retrieve_with_filter(mock_store, test_client):
     """Test retrieval with metadata filter."""
     # Setup mock
@@ -93,31 +96,39 @@ def test_retrieve_with_filter(mock_store, test_client):
     
     # Assertions
     assert response.status_code == 200
-    results = response.json()
+    response_data = response.json()
+    assert "results" in response_data
+    results = response_data["results"]
     assert len(results) == 1
     assert results[0]["document"]["metadata"]["source"] == "test"
 
 
-@patch('agents.retriever_agent.store.vector_store')
+@patch('agents.retriever_agent.main.vector_store')
 def test_delete_documents_endpoint(mock_store, test_client):
     """Test the document deletion endpoint."""
     # Setup mock
     mock_store.delete_documents.return_value = 2
     
-    # Test data
-    test_data = {"document_ids": ["doc1", "doc2"]}
-    
-    # Make request
-    response = test_client.request("DELETE", "/documents", json=test_data)
+    # Make request with document_ids as query parameters
+    response = test_client.delete(
+        "/documents",
+        params={"document_ids": ["doc1", "doc2"]}
+    )
     
     # Assertions
     assert response.status_code == 200
-    assert response.json()["status"] == "success"
-    assert response.json()["deleted"] == 2
-    mock_store.delete_documents.assert_called_once_with(["doc1", "doc2"], namespace=None)
+    result = response.json()
+    assert result["status"] == "success"
+    assert result["deleted"] == 2
+    
+    # Check that delete_documents was called with the correct arguments
+    mock_store.delete_documents.assert_called_once()
+    args, kwargs = mock_store.delete_documents.call_args
+    assert args[0] == ["doc1", "doc2"]  # First positional argument
+    assert kwargs.get("namespace") is None  # namespace is passed as keyword arg
 
 
-@patch('agents.retriever_agent.store.vector_store')
+@patch('agents.retriever_agent.main.vector_store')
 def test_update_document_endpoint(mock_store, test_client):
     """Test the document update endpoint."""
     # Setup mock
@@ -141,51 +152,73 @@ def test_update_document_endpoint(mock_store, test_client):
     assert response.json()["updated"] is True
 
 
-@patch('agents.retriever_agent.store.vector_store')
+@patch('agents.retriever_agent.main.vector_store')
 def test_update_document_not_found(mock_store, test_client):
-    """Test updating a non-existent document."""
-    # Setup mock
-    mock_store.update_document.side_effect = ValueError("Document not found")
+    """Test updating a non-existent document returns appropriate error response.
     
-    # Test data
+    Verifies that:
+    - API returns 404 status code for non-existent documents
+    - Error response contains the expected structure with detail and message
+    - Error message includes the non-existent document ID
+    """
+    # Setup mock to simulate document not found
+    mock_store.update_document.return_value = False
+    
+    # Test data with a sample document
     test_data = {
-        "document_id": "nonexistent",
         "document": {
             "page_content": "new content",
             "metadata": {"source": "test"}
         }
     }
     
-    # Make request
-    response = test_client.put("/documents/nonexistent", json=test_data)
+    # Make request with a non-existent document ID
+    document_id = "nonexistent"
+    response = test_client.put(f"/documents/{document_id}", json=test_data)
     
-    # Assertions
-    assert response.status_code == 404
-    assert "Document not found" in response.json()["detail"]
-    assert "not found" in response.json()["message"]
+    # Verify response status code
+    assert response.status_code == 404, "Should return 404 for non-existent document"
+    
+    # Parse and validate response structure
+    response_data = response.json()
+    assert isinstance(response_data, dict), "Response should be a JSON object"
+    
+    # Verify error response structure
+    assert "detail" in response_data, "Response should contain 'detail' field"
+    assert isinstance(response_data["detail"], dict), "Detail should be an object"
+    
+    # Verify error message content
+    error_detail = response_data["detail"]
+    assert error_detail.get("detail") == "Document not found", \
+           "Error detail should indicate document not found"
+    assert document_id in error_detail.get("message", ""), \
+           f"Error message should include document ID '{document_id}'"
 
 
-@patch('agents.retriever_agent.store.vector_store')
+@patch('agents.retriever_agent.main.vector_store')
 def test_clear_vector_store_endpoint(mock_store, test_client):
     """Test the endpoint to clear the vector store."""
     # Setup mock
-    mock_store.clear.return_value = True
+    mock_store.clear_vector_store.return_value = True
     
     # Make request
     response = test_client.delete("/clear")
     
     # Assertions
     assert response.status_code == 200
-    assert response.json()["status"] == "success"
-    assert response.json()["cleared"] is True
-    mock_store.clear.assert_called_once()
+    response_data = response.json()
+    assert response_data["status"] == "success"
+    assert response_data["cleared"] is True
+    
+    # Verify the mock was called
+    mock_store.clear_vector_store.assert_called_once()
 
 
-@patch('agents.retriever_agent.store.vector_store')
+@patch('agents.retriever_agent.main.vector_store')
 def test_batch_ingest_endpoint(mock_store, test_client):
     """Test the batch document ingestion endpoint."""
     # Setup mock
-    mock_store.add_documents.return_value = ["doc1", "doc2", "doc3"]
+    mock_store.add_documents_batched.return_value = ["doc1", "doc2", "doc3"]
     
     # Test data
     test_data = {
@@ -203,26 +236,47 @@ def test_batch_ingest_endpoint(mock_store, test_client):
     result = response.json()
     assert result["status"] == "success"
     assert len(result["document_ids"]) == 3
-    assert mock_store.add_documents.call_count == 1
     # Verify add_documents_batched was called with the right parameters
-    # mock_store.add_documents_batched.assert_called_once()
-    # args, kwargs = mock_store.add_documents_batched.call_args
+    mock_store.add_documents_batched.assert_called_once()
+    args, kwargs = mock_store.add_documents_batched.call_args
+    documents = args[0]
+    assert len(documents) == 3
+    assert kwargs["batch_size"] == 100  # Default batch size
     # assert len(args[0]) == 5  # 5 documents
     # assert kwargs["batch_size"] == 2
 
 
-@patch('agents.retriever_agent.store.vector_store')
+@patch('agents.retriever_agent.main.vector_store')
 def test_rate_limiter(mock_store, test_client):
     """Test that rate limiting works."""
     # Setup mock
     mock_store.get_stats.return_value = {"document_count": 5, "dimension": 384}
     
     # Make multiple requests in quick succession
-    for i in range(105):  # Just over the limit of 100 requests per minute
-        response = test_client.get("/health")
-        if i < 100:
-            assert response.status_code == 200
-        else:
-            # The 101st request should be rate limited
-            assert response.status_code == 429
-            assert "Rate limit exceeded" in response.json()["detail"]
+    # Use a real IP address to ensure rate limiting is active
+    test_ip = "192.168.1.1"
+    headers = {"X-Forwarded-For": test_ip}
+    
+    # First make sure rate limit data is cleared for this IP
+    from agents.retriever_agent.main import rate_limit_data
+    if test_ip in rate_limit_data:
+        del rate_limit_data[test_ip]
+    
+    # First 100 requests should succeed
+    for i in range(100):
+        response = test_client.get("/health", headers=headers)
+        assert response.status_code == 200, f"Request {i+1} failed with status {response.status_code}"
+    
+    # The 101st request should be rate limited
+    response = test_client.get("/health", headers=headers)
+    assert response.status_code == 429, f"Expected 429 status code, got {response.status_code}"
+    
+    # Clean up
+    if test_ip in rate_limit_data:
+        del rate_limit_data[test_ip]
+    assert "Rate limit exceeded" in response.json()["detail"]
+    
+    # Reset rate limiting for other tests
+    from agents.retriever_agent.main import rate_limit_data
+    if test_ip in rate_limit_data:
+        del rate_limit_data[test_ip]

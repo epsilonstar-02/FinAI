@@ -67,10 +67,145 @@ FinAI is an advanced multi-agent financial intelligence system designed to provi
 
 ### Retriever Agent
 - **Base URL**: `http://localhost:8003`
-- **Endpoints**:
-  - `GET /health` - Service health check
-  - `POST /search` - Semantic search
-  - `POST /ingest` - Ingest new documents
+- **Rate Limiting**: 100 requests per minute per IP address
+
+#### Endpoints
+
+##### `GET /health`
+- **Description**: Service health check
+- **Response**: `{"status": "ok", "version": "0.1.0"}`
+
+##### `POST /search`
+- **Description**: Semantic search across documents
+- **Request Body**:
+  ```json
+  {
+    "query": "search query",
+    "top_k": 5,
+    "namespace": "optional_namespace",
+    "filter": {}
+  }
+  ```
+- **Success Response (200)**:
+  ```json
+  {
+    "results": [
+      {
+        "page_content": "document content",
+        "metadata": {},
+        "score": 0.95
+      }
+    ]
+  }
+  ```
+
+##### `POST /ingest`
+- **Description**: Ingest a single document
+- **Request Body**:
+  ```json
+  {
+    "documents": [
+      {
+        "page_content": "document content",
+        "metadata": {"source": "test"}
+      }
+    ],
+    "namespace": "optional_namespace"
+  }
+  ```
+- **Success Response (200)**:
+  ```json
+  {
+    "status": "success",
+    "ingested_documents": 1,
+    "document_ids": ["doc1"]
+  }
+  ```
+
+##### `POST /ingest/batch`
+- **Description**: Batch ingest multiple documents
+- **Request Body**: Same as `/ingest`
+- **Query Parameters**:
+  - `batch_size`: Number of documents to process in each batch (default: 100)
+- **Success Response (200)**: Same as `/ingest`
+
+##### `PUT /documents/{document_id}`
+- **Description**: Update an existing document
+- **Path Parameters**:
+  - `document_id`: ID of the document to update
+- **Request Body**:
+  ```json
+  {
+    "document": {
+      "page_content": "updated content",
+      "metadata": {"source": "updated"}
+    },
+    "namespace": "optional_namespace"
+  }
+  ```
+- **Success Response (200)**:
+  ```json
+  {
+    "status": "success",
+    "updated": true,
+    "document_id": "doc1",
+    "namespace": "default"
+  }
+  ```
+- **Error Response (404)**:
+  ```json
+  {
+    "detail": {
+      "detail": "Document not found",
+      "message": "Document with ID doc1 not found"
+    }
+  }
+  ```
+
+##### `DELETE /documents`
+- **Description**: Delete documents by their IDs
+- **Query Parameters**:
+  - `document_ids`: Comma-separated list of document IDs
+  - `namespace`: Optional namespace
+- **Success Response (200)**:
+  ```json
+  {
+    "status": "success",
+    "deleted": true,
+    "document_ids": ["doc1", "doc2"]
+  }
+  ```
+
+##### `DELETE /clear`
+- **Description**: Clear all documents in a namespace
+- **Query Parameters**:
+  - `namespace`: Optional namespace (default: "default")
+- **Success Response (200)**:
+  ```json
+  {
+    "status": "success",
+    "cleared": true
+  }
+  ```
+
+##### `GET /stats`
+- **Description**: Get statistics about the vector store
+- **Query Parameters**:
+  - `namespace`: Optional namespace (default: "default")
+- **Success Response (200)**:
+  ```json
+  {
+    "document_count": 10,
+    "namespace": "default",
+    "vector_dimensions": 768
+  }
+  ```
+
+#### Error Handling
+- **400 Bad Request**: Invalid request parameters or missing required fields
+- **404 Not Found**: Requested resource not found
+- **429 Too Many Requests**: Rate limit exceeded (100 requests per minute)
+- **500 Internal Server Error**: Server-side error
 
 ## Development Guide
 

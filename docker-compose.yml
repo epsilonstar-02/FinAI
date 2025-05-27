@@ -21,7 +21,7 @@ services:
       
   retriever-agent:
     build:
-      context: ../../
+      context: .
       dockerfile: Dockerfile.retriever
     ports:
       - "8003:8001"
@@ -36,6 +36,25 @@ services:
       - PORT=8001
     restart: unless-stopped
 
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    ports:
+      - "8004:8001"
+    env_file:
+      - .env
+    depends_on:
+      - api_agent
+      - scraping_agent
+      - retriever-agent
+    environment:
+      - API_AGENT_URL=http://api_agent:8001
+      - SCRAPING_AGENT_URL=http://scraping_agent:8002
+      - RETRIEVER_AGENT_URL=http://retriever-agent:8001
+      - TIMEOUT=30
+    restart: unless-stopped
+
   streamlit:
     build:
       context: .
@@ -47,4 +66,5 @@ services:
     depends_on:
       - api_agent
       - scraping_agent
-      - retriever_agent
+      - retriever-agent
+      - orchestrator

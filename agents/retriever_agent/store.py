@@ -324,8 +324,9 @@ class VectorStore:
             return
             
         try:
-            # Get all document texts
-            texts = [doc['page_content'] for doc in self.documents.values()]
+            # Get all document texts in order and update document_ids
+            self.document_ids = list(self.documents.keys())
+            texts = [self.documents[doc_id]['page_content'] for doc_id in self.document_ids]
             
             # Generate embeddings
             logger.info(f"Generating embeddings for {len(texts)} documents")

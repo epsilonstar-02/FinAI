@@ -10,8 +10,10 @@ class Settings(BaseSettings):
     # HTTP timeout (seconds)
     TIMEOUT: int = Field(default=5, env="TIMEOUT")
 
-    class Config:
-        env_file = ".env"
-        extra = "allow"  # Allow extra fields
+    # Pydantic v2+ configuration
+    model_config = {
+        "env_file": ".env",
+        "extra": "allow"  # Allow extra fields from env vars meant for other services
+    }
 
 settings = Settings()

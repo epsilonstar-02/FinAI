@@ -6,10 +6,12 @@ from pathlib import Path
 import tempfile
 import shutil
 from fastapi.testclient import TestClient
-from agents.retriever_agent.main import app
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+
+# Import the FastAPI app
+from agents.retriever_agent.main import app
 
 @pytest.fixture(scope="session")
 def temp_dir():
@@ -51,6 +53,13 @@ import asyncio
 from fastapi import status
 from fastapi.responses import JSONResponse
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def test_client():
-    return TestClient(app)
+    """Create a TestClient for the retriever FastAPI app."""
+    # Import the app directly to avoid import issues
+    from agents.retriever_agent.main import app
+    
+    # Create test client with the app
+    client = TestClient(app)
+    yield client
+    client.close()  # Ensure the client is closed after the test
