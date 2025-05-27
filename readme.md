@@ -23,7 +23,8 @@ FinAI
 ├── agents/
 │   ├── api_agent/         # Handles financial data API integrations
 │   ├── scraping_agent/    # Web scraping for financial data
-│   └── retriever_agent/   # Vector embeddings and semantic search
+│   ├── retriever_agent/   # Vector embeddings and semantic search
+│   └── language_agent/    # Text generation with Google Gemini
 ├── streamlit_app/         # Web interface
 ├── data_ingestion/        # Data processing pipelines
 └── orchestrator/          # Coordinates agent interactions
@@ -79,6 +80,11 @@ SCRAPING_TIMEOUT=5
 EMBEDDING_MODEL=all-MiniLM-L6-v2
 VECTOR_STORE_PATH=/app/data/vector_store
 
+# Language Agent
+GEMINI_API_KEY=your_gcp_service_key_here
+GEMINI_MODEL=gemini-flash
+TIMEOUT=10
+
 # Streamlit
 STREAMLIT_SERVER_PORT=8501
 ```
@@ -90,6 +96,8 @@ STREAMLIT_SERVER_PORT=8501
 | API Agent | 8001 | Financial data API endpoints |
 | Scraping Agent | 8002 | Web scraping services |
 | Retriever Agent | 8003 | Vector search and embeddings |
+| Language Agent | 8005 | Text generation with Gemini |
+| Orchestrator | 8004 | Agent coordination service |
 | Streamlit UI | 8501 | Web interface |
 
 ## 📚 Documentation

@@ -1,0 +1,5 @@
+fastapi
+pydantic
+python-dotenv
+jinja2
+google-generativeai

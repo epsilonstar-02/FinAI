@@ -52,7 +52,23 @@ services:
       - API_AGENT_URL=http://api_agent:8001
       - SCRAPING_AGENT_URL=http://scraping_agent:8002
       - RETRIEVER_AGENT_URL=http://retriever-agent:8001
+      - LANGUAGE_AGENT_URL=http://language_agent:8004
       - TIMEOUT=30
+    restart: unless-stopped
+
+  language_agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.language
+    ports:
+      - "8005:8004"
+    env_file:
+      - .env
+    environment:
+      - GEMINI_MODEL=gemini-flash
+      - TIMEOUT=10
+      - HOST=0.0.0.0
+      - PORT=8004
     restart: unless-stopped
 
   streamlit:
@@ -68,3 +84,4 @@ services:
       - scraping_agent
       - retriever-agent
       - orchestrator
+      - language_agent
