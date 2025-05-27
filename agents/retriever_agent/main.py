@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status, Request
+from fastapi import FastAPI, HTTPException, Depends, status, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 RATE_LIMIT_DURATION = 60  # seconds
 MAX_REQUESTS = 100  # requests per duration
 rate_limit_data = {}
+last_cleanup_time = time.time()
 
 app = FastAPI(
     title="Retriever Agent",
@@ -48,11 +49,21 @@ app.add_middleware(
 # Request timing and rate limiting middleware
 @app.middleware("http")
 async def add_process_time_header(request: Request, call_next):
+    global last_cleanup_time
     # Rate limiting check
     client_ip = request.client.host
     current_time = time.time()
     
-    # Initialize or clean up expired entries
+    # Clean up old rate limit data periodically
+    if current_time - last_cleanup_time > RATE_LIMIT_DURATION:
+        for ip in list(rate_limit_data.keys()):
+            rate_limit_data[ip] = [ts for ts in rate_limit_data[ip] 
+                                if current_time - ts < RATE_LIMIT_DURATION]
+            if not rate_limit_data[ip]:
+                del rate_limit_data[ip]
+        last_cleanup_time = current_time
+    
+    # Initialize or clean up expired entries for this IP
     if client_ip in rate_limit_data:
         # Remove timestamps older than the rate limit duration
         rate_limit_data[client_ip] = [ts for ts in rate_limit_data[client_ip] 
@@ -209,7 +220,7 @@ async def retrieve_documents(request: QueryRequest):
 
 # Document deletion endpoint
 @app.delete("/documents", tags=["Documents"])
-async def delete_documents(document_ids: List[str], namespace: Optional[str] = None):
+async def delete_documents(document_ids: List[str] = Query(...), namespace: Optional[str] = None):
     """
     Delete documents from the vector store by their IDs.
     
@@ -248,10 +259,10 @@ async def clear_store(namespace: Optional[str] = None):
     """
     try:
         vector_store.clear_vector_store(namespace)
-        
         return {
             "status": "success",
-            "message": f"Cleared all documents from namespace: {namespace or 'default'}",
+            "cleared": True,
+            "namespace": namespace or "default",
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
@@ -265,11 +276,11 @@ async def clear_store(namespace: Optional[str] = None):
 @app.post("/batch-ingest", status_code=status.HTTP_201_CREATED, tags=["Documents"])
 async def batch_ingest_documents(request: IngestRequest, batch_size: int = 100):
     """
-    Ingest a large number of documents into the vector store in batches.
+    Batch ingest documents into the vector store.
     
     - **documents**: List of documents to ingest
-    - **namespace**: Optional namespace (default: "default")
-    - **batch_size**: Size of each processing batch (default: 100)
+    - **namespace**: Optional namespace to organize documents (default: "default")
+    - **batch_size**: Number of documents to process in each batch (default: 100)
     """
     try:
         # Validate request
@@ -278,9 +289,6 @@ async def batch_ingest_documents(request: IngestRequest, batch_size: int = 100):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No documents provided for ingestion"
             )
-            
-        if batch_size <= 0 or batch_size > 500:
-            batch_size = 100  # Use default if invalid
             
         # Convert to internal Document model
         documents = [
@@ -291,8 +299,8 @@ async def batch_ingest_documents(request: IngestRequest, batch_size: int = 100):
             for doc in request.documents
         ]
         
-        # Add documents in batches
-        vector_store.add_documents_batched(documents, batch_size, request.namespace)
+        # Add to vector store in batches
+        vector_store.add_documents_batched(documents, batch_size=batch_size, namespace=request.namespace)
         
         logger.info(f"Batch ingested {len(documents)} documents into namespace '{request.namespace or 'default'}'")
         
@@ -300,7 +308,7 @@ async def batch_ingest_documents(request: IngestRequest, batch_size: int = 100):
             "status": "success", 
             "ingested": len(documents),
             "namespace": request.namespace or "default",
-            "batches": (len(documents) - 1) // batch_size + 1,
+            "batch_size": batch_size,
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
@@ -312,22 +320,35 @@ async def batch_ingest_documents(request: IngestRequest, batch_size: int = 100):
 
 # Document update endpoint
 class DocumentUpdateRequest(BaseModel):
-    document_id: str
     document: DocModel
     namespace: Optional[str] = None
 
-@app.put("/documents", tags=["Documents"])
-async def update_document(request: DocumentUpdateRequest):
+@app.put("/documents/{document_id}", tags=["Documents"])
+async def update_document(document_id: str, request: DocumentUpdateRequest):
     """
     Update a document in the vector store.
     
     - **document_id**: ID of the document to update
-    - **document**: New document content and metadata
-    - **namespace**: Optional namespace (default: "default")
+    - **document**: Updated document content and metadata
+    - **namespace**: Optional namespace the document is in
     """
     try:
+        if not document_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Document ID is required"
+            )
+            
+        # Validate document
+        if not request.document.page_content:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Document content cannot be empty"
+            )
+            
+        # Update document
         success = vector_store.update_document(
-            document_id=request.document_id,
+            document_id=document_id,
             document=request.document,
             namespace=request.namespace
         )
@@ -335,12 +356,13 @@ async def update_document(request: DocumentUpdateRequest):
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Document with ID {request.document_id} not found"
+                detail={"detail": "Document not found", "message": f"Document with ID {document_id} not found"}
             )
-        
+            
         return {
             "status": "success",
-            "message": f"Updated document {request.document_id}",
+            "updated": True,
+            "document_id": document_id,
             "namespace": request.namespace or "default",
             "timestamp": datetime.utcnow().isoformat()
         }
@@ -372,6 +394,38 @@ async def get_stats(namespace: Optional[str] = None):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get stats: {str(e)}"
+        )
+
+# Add /ingest/batch endpoint for batch ingest
+@app.post("/ingest/batch", status_code=status.HTTP_200_OK, tags=["Documents"])
+async def ingest_batch_documents(request: IngestRequest, batch_size: int = 100):
+    try:
+        if not request.documents:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No documents provided for ingestion"
+            )
+        documents = [
+            DocModel(
+                page_content=doc.page_content,
+                metadata=doc.metadata or {}
+            )
+            for doc in request.documents
+        ]
+        vector_store.add_documents_batched(documents, batch_size=batch_size, namespace=request.namespace)
+        logger.info(f"Batch ingested {len(documents)} documents into namespace '{request.namespace or 'default'}'")
+        return {
+            "status": "success",
+            "document_ids": [str(i) for i in range(len(documents))],
+            "namespace": request.namespace or "default",
+            "batch_size": batch_size,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Batch document ingestion failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to batch ingest documents: {str(e)}"
         )
 
 if __name__ == "__main__":

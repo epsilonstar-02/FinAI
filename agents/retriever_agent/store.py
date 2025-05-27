@@ -19,6 +19,7 @@ class VectorStore:
     def __init__(self):
         self.index = None
         self.documents = {}
+        self.document_ids = []  # Keep track of document order for FAISS index
         self.dimension = 384  # Default for all-MiniLM-L6-v2
         self.namespace = "default"
         self.last_updated = datetime.utcnow()
@@ -40,7 +41,7 @@ class VectorStore:
     
     def save(self, namespace: Optional[str] = None):
         """Save the index and documents to disk."""
-        if self.index is None:
+        if self.index is None or len(self.documents) == 0:
             logger.warning(f"Cannot save empty index for namespace: {namespace or self.namespace}")
             return
             
@@ -59,10 +60,12 @@ class VectorStore:
             with open(docs_path, 'w', encoding='utf-8') as f:
                 json.dump({
                     "documents": self.documents,
+                    "document_ids": self.document_ids,
                     "metadata": {
                         "last_updated": self.last_updated.isoformat(),
                         "document_count": len(self.documents),
-                        "dimension": self.dimension
+                        "dimension": self.dimension,
+                        "namespace": ns
                     }
                 }, f, ensure_ascii=False, indent=2)
             logger.info(f"Saved {len(self.documents)} documents to {docs_path}")
@@ -94,6 +97,7 @@ class VectorStore:
                 # Handle both formats (old format compatibility)
                 if isinstance(data, dict) and "documents" in data:
                     self.documents = data["documents"]
+                    self.document_ids = data.get("document_ids", list(self.documents.keys()))
                     # Try to get last_updated from metadata
                     meta = data.get("metadata", {})
                     if "last_updated" in meta:
@@ -103,6 +107,7 @@ class VectorStore:
                             self.last_updated = datetime.utcnow()
                 else:
                     self.documents = data
+                    self.document_ids = list(self.documents.keys())
                     self.last_updated = datetime.utcnow()
                     
                 logger.info(f"Loaded {len(self.documents)} documents from {docs_path}")
@@ -112,11 +117,8 @@ class VectorStore:
                 
             self.namespace = ns
             return True
-        except IOError as e:
-            logger.error(f"IO error loading vector store: {str(e)}")
-            return False
         except Exception as e:
-            logger.error(f"Unexpected error loading vector store: {str(e)}")
+            logger.error(f"Error loading vector store: {str(e)}")
             return False
     
     def add_documents(self, documents: List[Document], namespace: Optional[str] = None):
@@ -131,6 +133,7 @@ class VectorStore:
         if not self.load(ns):
             # Create new index if it doesn't exist
             self.documents = {}
+            self.document_ids = []
             self.dimension = len(embedder.embed_query("test"))  # Get dimension from embedder
             self.index = faiss.IndexFlatL2(self.dimension)
             logger.info(f"Created new FAISS index with dimension {self.dimension}")
@@ -152,9 +155,10 @@ class VectorStore:
                 doc_id = str(uuid.uuid4())
                 self.documents[doc_id] = {
                     'page_content': doc.page_content,
-                    'metadata': doc.metadata,
+                    'metadata': doc.metadata or {},
                     'added_at': datetime.utcnow().isoformat()
                 }
+                self.document_ids.append(doc_id)
             
             logger.info(f"Added {len(documents)} documents to vector store")
             
@@ -173,41 +177,49 @@ class VectorStore:
     ) -> List[SearchResult]:
         """Search for similar documents."""
         if not self.load(namespace):
+            logger.info("No documents in vector store for search")
             return []
         
-        # Get query embedding
-        query_embedding = embedder.embed_query(query)
-        query_embedding_np = np.array([query_embedding]).astype('float32')
+        if not self.documents:
+            logger.info("No documents available for search")
+            return []
         
-        # Search in FAISS
-        distances, indices = self.index.search(query_embedding_np, k)
-        
-        # Convert to SearchResult objects
-        results = []
-        for i, idx in enumerate(indices[0]):
-            if idx == -1:  # No more results
-                continue
+        try:
+            # Get query embedding
+            query_embedding = embedder.embed_query(query)
+            if not query_embedding:
+                logger.warning("Failed to generate query embedding")
+                return []
                 
-            doc_id = str(idx)
-            if doc_id not in self.documents:
-                continue
-                
-            doc_data = self.documents[doc_id]
-            doc = Document(
-                page_content=doc_data['page_content'],
-                metadata=doc_data['metadata']
-            )
+            query_embedding_np = np.array([query_embedding]).astype('float32')
             
-            # Apply filters if provided
-            if filter and not self._matches_filter(doc.metadata, filter):
-                continue
-                
-            results.append(SearchResult(
-                document=doc,
-                score=float(distances[0][i])
-            ))
-        
-        return results
+            # Search in FAISS
+            distances, indices = self.index.search(query_embedding_np, min(k, len(self.document_ids)))
+            
+            # Convert to SearchResult objects
+            results = []
+            for i, idx in enumerate(indices[0]):
+                if idx == -1 or idx >= len(self.document_ids):  # No more results or invalid index
+                    continue
+                doc_id = self.document_ids[idx]
+                if doc_id not in self.documents:
+                    continue
+                doc_data = self.documents[doc_id]
+                doc = Document(
+                    page_content=doc_data['page_content'],
+                    metadata=doc_data.get('metadata', {})
+                )
+                # Apply filters if provided
+                if filter and not self._matches_filter(doc.metadata, filter):
+                    continue
+                results.append(SearchResult(
+                    document=doc,
+                    score=float(distances[0][i])
+                ))
+            return results
+        except Exception as e:
+            logger.error(f"Error during similarity search: {str(e)}")
+            return []
     
     def _matches_filter(self, metadata: Dict[str, Any], filter_dict: Dict[str, Any]) -> bool:
         """Check if document metadata matches the filter criteria."""
@@ -220,7 +232,7 @@ class VectorStore:
                 if key not in metadata or metadata[key] not in value:
                     return False
             # Handle special case for range values (for dates or numbers)
-            elif isinstance(value, dict) and ("$gt" in value or "$lt" in value or "$gte" in value or "$lte" in value):
+            elif isinstance(value, dict) and any(op in value for op in ["$gt", "$lt", "$gte", "$lte"]):
                 if key not in metadata:
                     return False
                     
@@ -245,84 +257,88 @@ class VectorStore:
     
     def get_stats(self, namespace: Optional[str] = None) -> Dict[str, Any]:
         """Get statistics about the vector store."""
-        if not self.load(namespace):
-            return {"document_count": 0, "dimension": 0}
-        
-        return {
-            "document_count": len(self.documents),
-            "dimension": self.dimension,
-            "namespace": namespace or self.namespace
-        }
-    def add_documents_batched(self, documents: List[Document], batch_size: int = 100, namespace: Optional[str] = None):
-        """Add documents to the vector store in batches to avoid memory issues."""
-        if not documents:
-            return
+        try:
+            if not self.load(namespace):
+                return {
+                    "document_count": 0, 
+                    "dimension": self.dimension,
+                    "namespace": namespace or self.namespace
+                }
             
-        logger.info(f"Adding {len(documents)} documents in batches of {batch_size}")
-        
-        # Process in batches
+            return {
+                "document_count": len(self.documents),
+                "dimension": self.dimension,
+                "namespace": namespace or self.namespace,
+                "last_updated": self.last_updated.isoformat() if self.last_updated else None
+            }
+        except Exception as e:
+            logger.error(f"Error getting stats: {str(e)}")
+            return {
+                "document_count": 0, 
+                "dimension": 0,
+                "namespace": namespace or self.namespace,
+                "error": str(e)
+            }
+    
+    def add_documents_batched(self, documents: List[Document], batch_size: int = 100, namespace: Optional[str] = None):
+        """Add documents to the vector store in batches."""
+        if not documents:
+            logger.info("No documents to add")
+            return
         for i in range(0, len(documents), batch_size):
             batch = documents[i:i+batch_size]
-            logger.info(f"Processing batch {i//batch_size + 1}: {len(batch)} documents")
             self.add_documents(batch, namespace)
-            
-        logger.info(f"Completed adding {len(documents)} documents in {(len(documents) - 1) // batch_size + 1} batches")
     
-    def delete_documents(self, document_ids: List[str], namespace: Optional[str] = None):
+    def delete_documents(self, document_ids: List[str], namespace: Optional[str] = None) -> int:
         """Delete documents from the vector store."""
-        if not document_ids:
-            logger.info("No document IDs provided for deletion")
-            return
-            
         if not self.load(namespace):
-            logger.warning("No documents to delete (store is empty)")
-            return
+            logger.warning(f"No documents found in namespace: {namespace or self.namespace}")
+            return 0
             
-        ns = namespace or self.namespace
-        deleted_count = 0
-        
+        if not document_ids:
+            return 0
+            
         try:
-            # Remove from documents dictionary
+            deleted_count = 0
             for doc_id in document_ids:
                 if doc_id in self.documents:
                     del self.documents[doc_id]
                     deleted_count += 1
             
             if deleted_count > 0:
-                # We need to rebuild the index when deleting
-                logger.info(f"Deleted {deleted_count} documents, rebuilding index")
+                # Rebuild index after deletion
                 self._rebuild_index()
-                self.save(ns)
-            else:
-                logger.info("No matching documents found for deletion")
+                # Save changes
+                self.save(namespace)
                 
+            logger.info(f"Deleted {deleted_count} documents from namespace: {namespace or self.namespace}")
             return deleted_count
         except Exception as e:
             logger.error(f"Error deleting documents: {str(e)}")
             raise RuntimeError(f"Failed to delete documents: {str(e)}")
     
     def _rebuild_index(self):
-        """Rebuild the index from the documents dictionary."""
+        """Rebuild the FAISS index from the current documents."""
         if not self.documents:
-            logger.info("No documents available to rebuild index")
-            self.index = faiss.IndexFlatL2(self.dimension)
+            logger.warning("No documents to rebuild index")
             return
             
         try:
-            # Create new index
-            self.index = faiss.IndexFlatL2(self.dimension)
+            # Get all document texts
+            texts = [doc['page_content'] for doc in self.documents.values()]
             
-            # Extract document contents and create embeddings
-            texts = [doc_data['page_content'] for doc_data in self.documents.values()]
-            logger.info(f"Rebuilding index with {len(texts)} documents")
-            
+            # Generate embeddings
+            logger.info(f"Generating embeddings for {len(texts)} documents")
             embeddings = embedder.embed_documents(texts)
             
-            # Convert to numpy array and add to index
+            # Convert to numpy array
             embeddings_np = np.array(embeddings).astype('float32')
+            
+            # Create new index
+            self.index = faiss.IndexFlatL2(self.dimension)
             self.index.add(embeddings_np)
             
-            logger.info(f"Index rebuilt with {len(texts)} documents")
+            logger.info(f"Rebuilt FAISS index with {len(texts)} documents")
         except Exception as e:
             logger.error(f"Error rebuilding index: {str(e)}")
             raise RuntimeError(f"Failed to rebuild index: {str(e)}")
@@ -332,6 +348,7 @@ class VectorStore:
         ns = namespace or self.namespace
         try:
             self.documents = {}
+            self.document_ids = []
             self.index = faiss.IndexFlatL2(self.dimension)
             self.save(ns)
             logger.info(f"Cleared all documents from namespace: {ns}")
@@ -339,32 +356,31 @@ class VectorStore:
             logger.error(f"Error clearing vector store: {str(e)}")
             raise RuntimeError(f"Failed to clear vector store: {str(e)}")
     
-    def update_document(self, document_id: str, document: Document, namespace: Optional[str] = None):
+    def update_document(self, document_id: str, document: Document, namespace: Optional[str] = None) -> bool:
         """Update a document in the vector store."""
         if not self.load(namespace):
-            logger.warning("Vector store is empty, nothing to update")
+            logger.warning(f"No documents found in namespace: {namespace or self.namespace}")
             return False
             
-        ns = namespace or self.namespace
-        
+        if document_id not in self.documents:
+            logger.warning(f"Document {document_id} not found")
+            return False
+            
         try:
-            # Check if document exists
-            if document_id not in self.documents:
-                logger.warning(f"Document ID {document_id} not found in vector store")
-                return False
-                
             # Update document
             self.documents[document_id] = {
                 'page_content': document.page_content,
-                'metadata': document.metadata,
+                'metadata': document.metadata or {},
                 'updated_at': datetime.utcnow().isoformat()
             }
             
-            # Rebuild the index
+            # Rebuild index to update embeddings
             self._rebuild_index()
-            self.save(ns)
             
-            logger.info(f"Updated document {document_id} in namespace {ns}")
+            # Save changes
+            self.save(namespace)
+            
+            logger.info(f"Updated document {document_id}")
             return True
         except Exception as e:
             logger.error(f"Error updating document: {str(e)}")

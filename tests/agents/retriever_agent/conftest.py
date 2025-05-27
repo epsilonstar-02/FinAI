@@ -1,9 +1,15 @@
 import pytest
+import sys
+import os
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 import tempfile
 import shutil
-import os
+from fastapi.testclient import TestClient
+from agents.retriever_agent.main import app
+
+# Add the project root to the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 
 @pytest.fixture(scope="session")
 def temp_dir():
@@ -40,9 +46,11 @@ def sample_documents():
         }
     ]
 
+import json
+import asyncio
+from fastapi import status
+from fastapi.responses import JSONResponse
+
 @pytest.fixture
 def test_client():
-    """Create a test client for the FastAPI app."""
-    from agents.retriever_agent.main import app
-    from fastapi.testclient import TestClient
     return TestClient(app)

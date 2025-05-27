@@ -1,9 +1,14 @@
 import pytest
 import os
+import sys
 import json
 import numpy as np
 from unittest.mock import patch, MagicMock, mock_open as mock_open_fn
 from datetime import datetime
+
+# Add the project root to the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+
 from agents.retriever_agent.store import VectorStore
 from agents.retriever_agent.models import Document, SearchResult
 
@@ -154,29 +159,38 @@ def test_delete_documents(mock_rebuild_index, mock_load, temp_dir):
 
 
 @patch('faiss.IndexFlatL2')
-def test_rebuild_index(mock_index_flat, temp_dir):
+@patch('agents.retriever_agent.store.embedder')
+def test_rebuild_index(mock_embedder, mock_index_flat, temp_dir):
     """Test rebuilding the index."""
+    # Setup mock index instance
     mock_index_instance = MagicMock()
     mock_index_flat.return_value = mock_index_instance
     
+    # Setup mock embedder
+    mock_embedder.embed_documents.return_value = [[0.1] * 384, [0.2] * 384]
+    
+    # Create a test store with some documents
     store = VectorStore()
     store.documents = {
         "doc1": {"page_content": "test1", "metadata": {}},
         "doc2": {"page_content": "test2", "metadata": {}}
     }
     
-    with patch('agents.retriever_agent.embedder.embedder') as mock_embedder:
-        mock_embedder.embed_documents.return_value = [[0.1] * 384, [0.2] * 384]
-        
-        # Rebuild index
-        store._rebuild_index()
-        
-        # Verify embedder was called with document contents
-        mock_embedder.embed_documents.assert_called_once_with(["test1", "test2"])
-        
-        # Verify new index was created and embeddings were added
-        assert mock_index_flat.called
-        assert mock_index_instance.add.called
+    # Call the method we're testing
+    store._rebuild_index()
+    
+    # Verify the embedder was called with the correct document contents
+    mock_embedder.embed_documents.assert_called_once_with(["test1", "test2"])
+    
+    # Verify a new index was created with the correct dimension
+    mock_index_flat.assert_called_once_with(384)  # 384 is the expected dimension
+    
+    # Verify the embeddings were added to the index
+    mock_index_instance.add.assert_called_once()
+    
+    # Get the actual embeddings that were added to the index
+    call_args = mock_index_instance.add.call_args[0][0]
+    assert call_args.shape == (2, 384)  # 2 documents, 384 dimensions
 
 
 @patch('faiss.IndexFlatL2')
