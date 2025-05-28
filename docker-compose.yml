@@ -71,6 +71,25 @@ services:
       - PORT=8004
     restart: unless-stopped
 
+  voice_agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.voice
+    ports:
+      - "8006:8006"
+    env_file:
+      - .env
+    depends_on:
+      - orchestrator
+    environment:
+      - STT_PROVIDER=whisper
+      - TTS_PROVIDER=gtts
+      - MODEL_PATH_STT=/app/models/whisper
+      - CACHE_DIR=/app/cache
+      - VAD_AGGRESSIVENESS=2
+      - RNNOISE_ENABLED=true
+    restart: unless-stopped
+
   streamlit:
     build:
       context: .

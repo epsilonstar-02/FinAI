@@ -99,6 +99,73 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# Model files
+*.pt
+*.pth
+*.h5
+*.hdf5
+*.ckpt
+*.safetensors
+*.onnx
+*.tflite
+*.tfl
+
+# Cache and temporary files
+.mypy_cache/
+.pytest_cache/
+.coverage.*
+.ruff_cache/
+.vscode/
+.python-version
+.python-version.*
+
+# Jupyter and IPython
+.ipynb_checkpoints/
+.ipynb_*
+*-checkpoint.ipynb
+
+# Environment and virtual environment
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+.env
+.venv
+
+# IDE specific
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+.ropeproject/
+.vs/
+
+# Local development
+local_settings.py
+local_config.py
+.env.local
+.env.*.local
+
+# Testing and coverage
+.coverage
+.tox/
+.nox/
+.pytest_cache/
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
 # Flask stuff:
 instance/
 .webassets-cache

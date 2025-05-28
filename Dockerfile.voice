@@ -1,0 +1,26 @@
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set the working directory
+WORKDIR /app
+
+# Copy requirements file and install dependencies
+COPY agents/voice_agent/requirements-voice.txt .
+RUN pip install --no-cache-dir -r requirements-voice.txt
+
+# Copy the Voice Agent module
+COPY agents/voice_agent/ /app/agents/voice_agent/
+
+# Expose the port
+EXPOSE 8006
+
+# Set environment variables
+ENV PYTHONPATH=/app
+
+# Run the FastAPI application
+CMD ["uvicorn", "agents.voice_agent.main:app", "--host", "0.0.0.0", "--port", "8006"]

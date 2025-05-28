@@ -1,0 +1,8 @@
+fastapi
+pydantic
+python-dotenv
+openai-whisper
+gtts
+pydub
+webrtcvad
+diskcache

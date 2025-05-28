@@ -42,7 +42,23 @@ FinAI is an advanced multi-agent financial intelligence system designed to provi
      - Document chunking and embedding generation
    - **Tech Stack**: FAISS, Sentence Transformers, LangChain
 
-4. **Streamlit UI**
+4. **Language Agent**
+   - **Port**: 8005
+   - **Responsibilities**:
+     - Natural language generation for market briefs and insights
+     - Contextual response generation
+     - Template-based prompt formatting
+   - **Tech Stack**: FastAPI, Google Generative AI, Jinja2
+
+5. **Voice Agent**
+   - **Port**: 8006
+   - **Responsibilities**:
+     - Speech-to-text conversion with VAD and noise reduction
+     - Text-to-speech synthesis with voice and speed control
+     - Audio processing and optimization
+   - **Tech Stack**: FastAPI, Whisper, gTTS, WebRTC VAD, RNNoise
+
+6. **Streamlit UI**
    - **Port**: 8501
    - **Features**:
      - Interactive dashboard
@@ -96,6 +112,61 @@ FinAI is an advanced multi-agent financial intelligence system designed to provi
         "score": 0.95
       }
     ]
+  }
+  ```
+
+### Language Agent
+- **Base URL**: `http://localhost:8005`
+- **Endpoints**:
+  - `GET /health` - Service health check
+  - `POST /generate` - Generate text based on query and context
+
+### Voice Agent
+- **Base URL**: `http://localhost:8006`
+- **Endpoints**:
+  - `GET /health` - Service health check
+  - `POST /stt` - Convert speech to text
+  - `POST /tts` - Convert text to speech
+
+#### Endpoints
+
+##### `GET /health`
+- **Description**: Service health check
+- **Response**: `{"status": "ok", "agent": "Voice Agent"}`
+
+##### `POST /stt`
+- **Description**: Convert speech to text
+- **Request Body**: Multipart form with audio file
+  - `file`: Audio file to transcribe (wav, mp3, etc.)
+- **Success Response (200)**:
+  ```json
+  {
+    "text": "Transcribed text content",
+    "confidence": 0.95
+  }
+  ```
+- **Error Response (502)**:
+  ```json
+  {
+    "detail": "Error message from STT service"
+  }
+  ```
+
+##### `POST /tts`
+- **Description**: Convert text to speech
+- **Request Body**:
+  ```json
+  {
+    "text": "Text to be converted to speech",
+    "voice": "default",
+    "speed": 1.0
+  }
+  ```
+- **Success Response (200)**: Audio file (audio/mpeg)
+- **Error Response (502)**:
+  ```json
+  {
+    "detail": "Error message from TTS service"
   }
   ```
 
