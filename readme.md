@@ -24,10 +24,37 @@ FinAI
 │   ├── api_agent/         # Handles financial data API integrations
 │   ├── scraping_agent/    # Web scraping for financial data
 │   ├── retriever_agent/   # Vector embeddings and semantic search
-│   └── language_agent/    # Text generation with Google Gemini
+│   ├── language_agent/    # Text generation with Google Gemini
+│   └── voice_agent/      # Handles speech-to-text and text-to-speech
 ├── streamlit_app/         # Web interface
 ├── data_ingestion/        # Data processing pipelines
 └── orchestrator/          # Coordinates agent interactions
+```
+
+## 🎛️ Orchestrator Service
+
+The Orchestrator is the central component that coordinates communication between all agents. It handles request routing, response aggregation, and error handling.
+
+### Key Features
+- **Multi-modal Support**: Handles both text and voice inputs
+- **Agent Coordination**: Manages communication between all microservices
+- **Error Handling**: Implements retry mechanisms and fallback strategies
+- **Logging**: Maintains detailed logs of all operations
+
+### API Endpoints
+- `POST /health`: Health check endpoint
+- `POST /run`: Main endpoint for processing requests
+
+### Configuration
+Configure the following environment variables:
+```
+API_AGENT_URL=http://api_agent:8001
+SCRAPING_AGENT_URL=http://scraping_agent:8002
+RETRIEVER_AGENT_URL=http://retriever_agent:8003
+ANALYSIS_AGENT_URL=http://analysis_agent:8004
+LANGUAGE_AGENT_URL=http://language_agent:8005
+VOICE_AGENT_URL=http://voice_agent:8006
+TIMEOUT=30
 ```
 
 ## 🛠️ Installation

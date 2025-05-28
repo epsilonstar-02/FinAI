@@ -149,6 +149,97 @@ tests/
 
 ## Services
 
+### Orchestrator Service
+
+The Orchestrator is the central coordinator of the FinAI system, responsible for routing requests between different agents and aggregating their responses.
+
+#### Key Components
+- **main.py**: FastAPI application with endpoint definitions
+- **client.py**: Async HTTP client for agent communication
+- **models.py**: Pydantic models for request/response validation
+- **config.py**: Configuration management
+
+#### API Endpoints
+
+##### `POST /health`
+Health check endpoint.
+
+**Response**:
+```json
+{
+  "status": "ok",
+  "version": "1.0.0"
+}
+```
+
+##### `POST /run`
+Main endpoint for processing requests.
+
+**Request Body**:
+```json
+{
+  "mode": "text",
+  "params": {
+    "query": "What is the current price of AAPL?",
+    "tickers": ["AAPL"]
+  },
+  "session_id": "unique-session-id"
+}
+```
+
+**Voice Mode Request**:
+```json
+{
+  "mode": "voice",
+  "params": {
+    "audio_bytes": "base64-encoded-audio-data"
+  },
+  "session_id": "unique-session-id"
+}
+```
+
+**Response**:
+```json
+{
+  "status": "success",
+  "result": {
+    "text": "The current price of AAPL is $175.34",
+    "audio": "base64-encoded-audio-response"
+  },
+  "steps": [
+    {
+      "tool": "voice_agent_stt",
+      "latency_ms": 1200,
+      "response": {"text": "What is the current price of AAPL?"}
+    },
+    {
+      "tool": "api_agent",
+      "latency_ms": 450,
+      "response": {"price": 175.34, "symbol": "AAPL"}
+    }
+  ]
+}
+```
+
+#### Configuration
+
+Environment Variables:
+- `API_AGENT_URL`: URL of the API agent service
+- `SCRAPING_AGENT_URL`: URL of the scraping agent service
+- `RETRIEVER_AGENT_URL`: URL of the retriever agent service
+- `ANALYSIS_AGENT_URL`: URL of the analysis agent service
+- `LANGUAGE_AGENT_URL`: URL of the language agent service
+- `VOICE_AGENT_URL`: URL of the voice agent service
+- `TIMEOUT`: Request timeout in seconds (default: 30)
+
+#### Error Handling
+
+The Orchestrator implements comprehensive error handling:
+- Retries failed requests with exponential backoff
+- Returns detailed error messages in the response
+- Logs all errors for debugging purposes
+- Implements circuit breakers to prevent cascading failures
+
 ### API Agent
 - **Base URL**: `http://localhost:8001`
 - **Endpoints**:

@@ -16,17 +16,32 @@ def call_orchestrator(input_text, params):
         JSON response from the orchestrator or None if the request failed
     """
     try:
-        url = f"{params.get('ORCH_URL', '')}/run"
-        response = requests.post(
-            url,
-            json={
-                "input": input_text,
-                "mode": params.get("mode", "text"),
+        import os
+        import base64
+        url = f"{os.getenv('ORCH_URL', 'http://orchestrator:8004')}/run"
+        
+        request_data = {
+            "mode": params.get("mode", "text"),
+            "params": {
+                "query": input_text,
+                "tickers": params.get("tickers", ["AAPL", "MSFT", "GOOGL"]),
                 "news_limit": params.get("news_limit", 3),
                 "retrieve_k": params.get("retrieve_k", 5),
                 "include_analysis": params.get("include_analysis", True)
             },
-            timeout=30
+            "session_id": params.get("session_id", "streamlit-session")
+        }
+        
+        # If in voice mode and we have audio bytes, include them
+        if params.get("mode") == "voice" and params.get("audio_bytes"):
+            # Encode audio bytes to base64
+            audio_base64 = base64.b64encode(params["audio_bytes"]).decode("utf-8")
+            request_data["params"]["audio_bytes"] = audio_base64
+            
+        response = requests.post(
+            url,
+            json=request_data,
+            timeout=60  # Increased timeout for more complex operations
         )
         response.raise_for_status()
         return response.json()
@@ -47,9 +62,20 @@ def call_stt(file_bytes):
     """
     try:
         import os
-        url = f"{os.getenv('VOICE_URL')}/stt"
-        files = {"file": ("audio.wav", file_bytes, "audio/wav")}
-        response = requests.post(url, files=files, timeout=30)
+        import base64
+        
+        # Get the voice agent URL from environment variables
+        url = f"{os.getenv('VOICE_URL', 'http://voice_agent:8006')}/stt"
+        
+        # Convert audio bytes to base64 for JSON serialization
+        audio_base64 = base64.b64encode(file_bytes).decode("utf-8")
+        
+        # Send as JSON payload instead of file upload
+        response = requests.post(
+            url,
+            json={"audio": audio_base64},
+            timeout=30
+        )
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -70,13 +96,33 @@ def call_tts(text, params):
     """
     try:
         import os
-        url = f"{os.getenv('VOICE_URL')}/tts"
+        import base64
+        
+        # Get the voice agent URL from environment variables
+        url = f"{os.getenv('VOICE_URL', 'http://voice_agent:8006')}/tts"
+        
+        # Prepare the request data
+        request_data = {
+            "text": text,
+            "voice": params.get("voice", "en-US-Neural2-F"),  # Default voice
+            "speaking_rate": params.get("speaking_rate", 1.0),  # Normal speed
+            "pitch": params.get("pitch", 0.0)  # Default pitch
+        }
+        
+        # Send the request
         response = requests.post(
             url,
-            json={"text": text, **params},
-            timeout=30
+            json=request_data,
+            timeout=45  # Longer timeout for TTS generation
         )
         response.raise_for_status()
+        
+        # If the response contains base64 audio, decode it
+        if 'audio' in response.json():
+            audio_base64 = response.json()['audio']
+            return base64.b64decode(audio_base64)
+        
+        # Fallback to raw content
         return response.content
     except requests.exceptions.RequestException as e:
         print(f"Error calling TTS service: {e}")
