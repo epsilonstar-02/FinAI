@@ -1,0 +1,141 @@
+/* General Styles */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+:root {
+    --primary-color: #1E88E5;
+    --secondary-color: #00897B;
+    --background-color: #FFFFFF;
+    --text-color: #212121;
+    --card-bg-color: #F5F7FA;
+    --card-border-color: #E0E0E0;
+    --success-color: #4CAF50;
+    --warning-color: #FF9800;
+    --error-color: #F44336;
+}
+
+[data-theme="dark"] {
+    --primary-color: #90CAF9;
+    --secondary-color: #80CBC4;
+    --background-color: #121212;
+    --text-color: #EEEEEE;
+    --card-bg-color: #1E1E1E;
+    --card-border-color: #333333;
+    --success-color: #81C784;
+    --warning-color: #FFB74D;
+    --error-color: #E57373;
+}
+
+/* Apply theme based on session state */
+body[data-theme="dark"] {
+    background-color: var(--background-color);
+    color: var(--text-color);
+}
+
+/* Streamlit elements styling */
+.stTextInput, .stTextArea, .stButton > button, .stSelectbox {
+    border-radius: 6px;
+}
+
+.stButton > button {
+    background-color: var(--primary-color);
+    color: white;
+    font-weight: 500;
+    border: none;
+    padding: 0.5rem 1rem;
+    transition: all 0.3s ease;
+}
+
+.stButton > button:hover {
+    background-color: var(--secondary-color);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Card styling */
+.card {
+    background-color: var(--card-bg-color);
+    border: 1px solid var(--card-border-color);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.card-title {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--primary-color);
+    border-bottom: 1px solid var(--card-border-color);
+    padding-bottom: 8px;
+}
+
+.card-content {
+    font-size: 1rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
+/* Success/Error message styling */
+.success-message {
+    padding: 10px;
+    background-color: var(--success-color);
+    color: white;
+    border-radius: 4px;
+    margin: 10px 0;
+}
+
+.error-message {
+    padding: 10px;
+    background-color: var(--error-color);
+    color: white;
+    border-radius: 4px;
+    margin: 10px 0;
+}
+
+/* Custom icons */
+.icon {
+    width: 24px;
+    height: 24px;
+    vertical-align: middle;
+    margin-right: 8px;
+}
+
+/* Audio player styling */
+audio {
+    width: 100%;
+    margin: 10px 0;
+    border-radius: 24px;
+}
+
+/* Progress steps */
+.step-progress {
+    display: flex;
+    align-items: center;
+    margin: 8px 0;
+}
+
+.step-progress .step-icon {
+    margin-right: 10px;
+    color: var(--primary-color);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .card {
+        padding: 12px;
+    }
+    
+    .card-title {
+        font-size: 1.1rem;
+    }
+    
+    .card-content {
+        font-size: 0.9rem;
+    }
+}

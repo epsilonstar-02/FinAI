@@ -11,13 +11,12 @@ class Settings(BaseSettings):
     API_AGENT_URL: str = "http://localhost:8000"
     SCRAPING_AGENT_URL: str = "http://localhost:8001"
     RETRIEVER_AGENT_URL: str = "http://localhost:8002"
+    ANALYSIS_AGENT_URL: str = "http://localhost:8003"
+    LANGUAGE_AGENT_URL: str = "http://localhost:8004"
+    VOICE_AGENT_URL: str = "http://localhost:8005"
     
     # Timeout settings
-    TIMEOUT: int = 30
-    
-    # API keys (optional with empty defaults)
-    ALPHAVANTAGE_API_KEY: str = ""
-    SEC_API_KEY: str = ""
+    TIMEOUT: int = 5
     
     # Pydantic v2+ configuration
     model_config = SettingsConfigDict(

@@ -1,0 +1,7 @@
+streamlit
+streamlit-audiorec
+requests
+python-dotenv
+fpdf2
+pytest
+requests-mock

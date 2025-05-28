@@ -41,19 +41,24 @@ services:
       context: .
       dockerfile: Dockerfile.orchestrator
     ports:
-      - "8004:8001"
+      - "8004:8004"
     env_file:
       - .env
     depends_on:
       - api_agent
       - scraping_agent
       - retriever-agent
+      - analysis_agent
+      - language_agent
+      - voice_agent
     environment:
       - API_AGENT_URL=http://api_agent:8001
       - SCRAPING_AGENT_URL=http://scraping_agent:8002
       - RETRIEVER_AGENT_URL=http://retriever-agent:8001
+      - ANALYSIS_AGENT_URL=http://analysis_agent:8007
       - LANGUAGE_AGENT_URL=http://language_agent:8004
-      - TIMEOUT=30
+      - VOICE_AGENT_URL=http://voice_agent:8006
+      - TIMEOUT=5
     restart: unless-stopped
 
   language_agent:
@@ -102,7 +107,7 @@ services:
       - orchestrator
     restart: unless-stopped
 
-  streamlit:
+  ui:
     build:
       context: .
       dockerfile: Dockerfile.streamlit
@@ -111,9 +116,5 @@ services:
     env_file:
       - .env
     depends_on:
-      - api_agent
-      - scraping_agent
-      - retriever-agent
       - orchestrator
-      - language_agent
-      - analysis_agent
+      - voice_agent

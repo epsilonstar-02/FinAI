@@ -8,18 +8,29 @@ class RunRequest(BaseModel):
     """Request model for the /run endpoint."""
 
     input: str
-    mode: Literal["text"] = "text"
+    mode: str = "text"
+    params: Dict[str, Any] = {}
 
 
-class RunStep(BaseModel):
+class StepLog(BaseModel):
     """Model for a single step in the orchestration process."""
 
     tool: str
+    latency_ms: int
     response: Any
+
+
+class ErrorLog(BaseModel):
+    """Model for an error in the orchestration process."""
+
+    tool: str
+    message: str
 
 
 class RunResponse(BaseModel):
     """Response model for the /run endpoint."""
 
     output: str
-    steps: List[RunStep]
+    steps: List[StepLog]
+    errors: List[ErrorLog]
+    audio_url: Optional[str] = None

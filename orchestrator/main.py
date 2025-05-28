@@ -1,148 +1,144 @@
 """Orchestrator Agent main application."""
 import asyncio
 import re
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response, status
 
-from orchestrator.client import api_client, scraping_client, retriever_client
-from orchestrator.models import RunRequest, RunStep, RunResponse
+from orchestrator import client
+from orchestrator.config import settings
+from orchestrator.models import RunRequest, StepLog, ErrorLog, RunResponse
 
-app = FastAPI(title="Orchestrator Agent")
+app = FastAPI(title="Orchestrator", version="0.1.0")
 
 
 @app.get("/health")
 async def health_check() -> Dict[str, str]:
     """Health check endpoint."""
-    return {"status": "ok", "agent": "Orchestrator Agent"}
+    return {"status": "ok", "agent": "Orchestrator"}
 
 
 @app.post("/run", response_model=RunResponse)
 async def run(request: RunRequest) -> RunResponse:
     """Run the orchestration process based on input."""
-    user_input = request.input.strip()
+    input_text = request.input.strip()
+    mode = request.mode.lower()
+    params = request.params
     steps = []
-
-    # Extract potential stock symbols
-    symbol_match = re.search(r'\b[A-Z]{1,5}\b', user_input)
-    symbol = symbol_match.group(0) if symbol_match else None
-
-    # Extract potential topics from input
-    topic = user_input.lower()
+    errors = []
+    audio_url = None
     
-    # Execute tasks concurrently
+    # Validate mode
+    if mode not in ["text", "voice"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid mode: {mode}. Must be 'text' or 'voice'."
+        )
+    
+    # Process voice input if mode is voice
+    if mode == "voice" and "audio_bytes" in params:
+        try:
+            import base64
+            # Decode base64 audio data
+            audio_data = base64.b64decode(params["audio_bytes"])
+            latency_ms, stt_result = await client.call_stt(audio_data)
+            steps.append(StepLog(tool="voice_agent_stt", latency_ms=latency_ms, response=stt_result))
+            input_text = stt_result.get("text", input_text)
+        except Exception as e:
+            errors.append(ErrorLog(tool="voice_agent_stt", message=str(e)))
+    
+    # Prepare tasks based on params
     tasks = []
+    results = []
     
-    if symbol:
-        tasks.append(
-            asyncio.create_task(
-                _call_api_agent(symbol, "api_agent")
-            )
-        )
+    # Symbol lookup for financial data
+    if "symbols" in params:
+        tasks.append(asyncio.create_task(client.call_api(params["symbols"])))
     
-    tasks.append(
-        asyncio.create_task(
-            _call_scraping_agent(topic, 3, "scraping_agent")
-        )
-    )
+    # News scraping
+    if "topic" in params:
+        limit = params.get("limit", 3)
+        tasks.append(asyncio.create_task(client.call_scrape(params["topic"], limit)))
     
-    tasks.append(
-        asyncio.create_task(
-            _call_retriever_agent(user_input, 5, "retriever_agent")
-        )
-    )
+    # Vector store retrieval
+    if "query" in params:
+        k = params.get("k", 5)
+        tasks.append(asyncio.create_task(client.call_retrieve(params["query"], k)))
     
-    # Gather all results
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    # Price analysis
+    if "prices" in params:
+        historical = params.get("historical", False)
+        tasks.append(asyncio.create_task(client.call_analysis(params["prices"], historical)))
+    
+    # Execute all tasks concurrently and handle errors
+    if tasks:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
     
     # Process results
-    for result in results:
-        if isinstance(result, RunStep):
-            steps.append(result)
-    
-    # Generate output based on gathered information
-    output = _generate_response(user_input, steps)
-    
-    return RunResponse(output=output, steps=steps)
-
-
-async def _call_api_agent(symbol: str, tool_name: str) -> RunStep:
-    """Call the API agent to get price data."""
-    try:
-        response = await api_client.get(f"/price", params={"symbol": symbol}, tool_name=tool_name)
-        return RunStep(tool=tool_name, response=response)
-    except HTTPException as e:
-        # Re-raise the exception to be caught by the main handler
-        raise e
-
-
-async def _call_scraping_agent(topic: str, limit: int, tool_name: str) -> RunStep:
-    """Call the scraping agent to get news data."""
-    try:
-        response = await scraping_client.get(
-            f"/scrape/news", 
-            params={"topic": topic, "limit": limit},
-            tool_name=tool_name
-        )
-        return RunStep(tool=tool_name, response=response)
-    except HTTPException as e:
-        # Re-raise the exception to be caught by the main handler
-        raise e
-
-
-async def _call_retriever_agent(query: str, k: int, tool_name: str) -> RunStep:
-    """Call the retriever agent to get relevant information."""
-    try:
-        response = await retriever_client.get(
-            f"/retrieve", 
-            params={"q": query, "k": k},
-            tool_name=tool_name
-        )
-        return RunStep(tool=tool_name, response=response)
-    except HTTPException as e:
-        # Re-raise the exception to be caught by the main handler
-        raise e
-
-
-def _generate_response(user_input: str, steps: List[RunStep]) -> str:
-    """Generate a response based on the gathered information."""
-    # Basic response generation logic
-    response_parts = []
-    
-    for step in steps:
-        if step.tool == "api_agent" and step.response:
-            price_data = step.response
-            if "price" in price_data:
-                response_parts.append(
-                    f"Current price for {price_data.get('symbol', 'the stock')}: "
-                    f"${price_data.get('price', 'N/A')}"
-                )
+    context = {}
+    for i, result in enumerate(results):
+        tool_mapping = {
+            0: "api_agent",
+            1: "scraping_agent", 
+            2: "retriever_agent",
+            3: "analysis_agent"
+        }
         
-        elif step.tool == "scraping_agent" and step.response:
-            news_data = step.response
-            if news_data and isinstance(news_data, list) and len(news_data) > 0:
-                response_parts.append("Recent news:")
-                for idx, article in enumerate(news_data[:3], 1):
-                    title = article.get("title", "No title")
-                    response_parts.append(f"  {idx}. {title}")
+        tool_name = tool_mapping.get(i, f"agent_{i}")
         
-        elif step.tool == "retriever_agent" and step.response:
-            retriever_data = step.response
-            if retriever_data and isinstance(retriever_data, list) and len(retriever_data) > 0:
-                response_parts.append("Related information:")
-                for idx, item in enumerate(retriever_data[:2], 1):
-                    content = item.get("content", "No content")
-                    # Truncate long content
-                    if len(content) > 100:
-                        content = content[:97] + "..."
-                    response_parts.append(f"  {idx}. {content}")
+        if isinstance(result, Exception):
+            errors.append(ErrorLog(tool=tool_name, message=str(result)))
+        else:
+            latency_ms, response = result
+            steps.append(StepLog(tool=tool_name, latency_ms=latency_ms, response=response))
+            context[tool_name] = response
     
-    if not response_parts:
-        return "I couldn't find relevant information for your query."
+    # Generate narrative response using language agent
+    output = "Failed to generate a response."
+    try:
+        latency_ms, language_result = await client.call_language(input_text, context)
+        steps.append(StepLog(tool="language_agent", latency_ms=latency_ms, response=language_result))
+        output = language_result.get("text", output)
+    except Exception as e:
+        errors.append(ErrorLog(tool="language_agent", message=str(e)))
     
-    return "\n\n".join(response_parts)
+    # Generate audio if mode is voice
+    if mode == "voice":
+        try:
+            latency_ms, tts_result = await client.call_tts(output)
+            steps.append(StepLog(tool="voice_agent_tts", latency_ms=latency_ms, response=tts_result))
+            audio_url = tts_result.get("audio_url")
+        except Exception as e:
+            errors.append(ErrorLog(tool="voice_agent_tts", message=str(e)))
+    
+    # Return partial results if some operations failed
+    if errors and steps:
+        return Response(
+            status_code=status.HTTP_206_PARTIAL_CONTENT,
+            content=RunResponse(
+                output=output,
+                steps=steps,
+                errors=errors,
+                audio_url=audio_url
+            ).model_dump_json(),
+            media_type="application/json"
+        )
+    
+    # Return error if all operations failed
+    if errors and not steps:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="All downstream service calls failed"
+        )
+    
+    return RunResponse(
+        output=output,
+        steps=steps,
+        errors=errors,
+        audio_url=audio_url
+    )
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("orchestrator.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("orchestrator.main:app", host="0.0.0.0", port=8004, reload=True)

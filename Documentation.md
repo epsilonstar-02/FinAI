@@ -18,7 +18,89 @@ FinAI is an advanced multi-agent financial intelligence system designed to provi
 
 ### Core Components
 
-1. **API Agent**
+### Streamlit Front-End
+- **Port**: 8501
+- **Features**:
+  - Interactive web interface for financial queries
+  - Voice and text input modes
+  - Real-time processing feedback with progress indicators
+  - Session history of queries and responses
+  - PDF export functionality
+  - Dark/light theme support
+  - Responsive design for different screen sizes
+- **Tech Stack**:
+  - Streamlit 1.45.1 for the web interface
+  - requests for API communication with backend services
+  - streamlit-audiorec for audio recording functionality
+  - fpdf2 for PDF generation and export
+  - Custom CSS for enhanced styling and theming
+- **Key Components**:
+  - `app.py`: Main application logic and UI layout
+  - `components.py`: Reusable UI components (cards, audio player)
+  - `utils.py`: Helper functions for API calls and PDF generation
+  - `styles.css`: Custom styling for the application
+  - `assets/`: Contains static files (images, icons)
+
+### Testing
+
+#### Test Framework
+- **Framework**: pytest
+- **Test Location**: `tests/streamlit_app/`
+- **Test Types**:
+  - Unit tests for utility functions (`test_utils.py`)
+  - Component rendering tests (`test_components.py`)
+  - API interaction tests with mocked responses
+
+#### Test Coverage
+- **Utility Functions (`test_utils.py`)**:
+  - PDF generation and validation
+  - API client functions (orchestrator, STT, TTS)
+  - Error handling and edge cases
+  - Response parsing and validation
+
+- **Component Tests (`test_components.py`)**:
+  - UI component rendering
+  - Interactive elements
+  - State management
+  - Event handling
+
+#### Test Dependencies
+- pytest (test framework)
+- requests-mock (for API request mocking)
+- pytest-mock (for function patching)
+- pytest-cov (optional, for coverage reporting)
+
+#### Running Tests
+```bash
+# Run all tests
+pytest tests/streamlit_app/
+
+# Run with coverage report
+pytest --cov=streamlit_app tests/streamlit_app/
+
+# Run a specific test file
+pytest tests/streamlit_app/test_utils.py
+
+# Run a specific test function
+pytest tests/streamlit_app/test_utils.py::test_generate_pdf -v
+```
+
+#### Test Structure
+```
+tests/
+└── streamlit_app/
+    ├── __init__.py
+    ├── test_utils.py      # Tests for utility functions
+    └── test_components.py # Tests for UI components
+```
+
+#### Mocking Strategy
+- API responses are mocked using `requests_mock`
+- Streamlit functions are patched using `pytest-mock`
+- External services are isolated using fixtures
+- Test data is kept minimal and focused
+
+1. **API Agent"
    - **Port**: 8001
    - **Responsibilities**:
      - Fetching real-time and historical market data
