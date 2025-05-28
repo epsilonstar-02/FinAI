@@ -1,0 +1,10 @@
+fastapi==0.104.1
+pydantic==2.4.2
+python-dotenv==1.0.0
+numpy==1.26.1
+# pandas==2.1.2 # Not used directly in the provided code snippets, can be removed if not needed elsewhere
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.1
+uvicorn==0.23.2
+pydantic-settings==2.0.3 # Added for BaseSettings

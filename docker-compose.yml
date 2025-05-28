@@ -90,6 +90,18 @@ services:
       - RNNOISE_ENABLED=true
     restart: unless-stopped
 
+  analysis_agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.analysis
+    ports:
+      - "8007:8007"
+    env_file:
+      - .env
+    depends_on:
+      - orchestrator
+    restart: unless-stopped
+
   streamlit:
     build:
       context: .
@@ -104,3 +116,4 @@ services:
       - retriever-agent
       - orchestrator
       - language_agent
+      - analysis_agent
