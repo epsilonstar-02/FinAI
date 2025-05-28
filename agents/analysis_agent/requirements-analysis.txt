@@ -1,10 +1,18 @@
-fastapi==0.104.1
-pydantic==2.4.2
-python-dotenv==1.0.0
-numpy==1.26.1
-# pandas==2.1.2 # Not used directly in the provided code snippets, can be removed if not needed elsewhere
-pytest==7.4.3
-pytest-asyncio==0.21.1
-httpx==0.25.1
-uvicorn==0.23.2
-pydantic-settings==2.0.3 # Added for BaseSettings
+# Core dependencies
+fastapi>=0.104.1,<0.110.0
+uvicorn[standard]>=0.24.0,<0.35.0
+pydantic>=2.7.4,<3.0.0
+pydantic-settings>=2.0.3,<3.0.0
+python-dotenv>=1.0.0,<2.0.0
+httpx>=0.25.0,<0.28.0
+numpy>=1.26.1,<2.0.0
+pandas>=2.0.3,<3.0.0  # Needed for financial analysis
+
+# Testing
+pytest>=7.0.0,<8.0.0
+pytest-asyncio>=0.21.0,<0.24.0
+
+# Financial analysis utilities
+scipy>=1.10.1          # For statistical calculations
+statsmodels>=0.14.0    # For time series analysis
+pyportfolioopt>=1.5.4  # For portfolio optimization

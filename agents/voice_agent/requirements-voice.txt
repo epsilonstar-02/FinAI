@@ -1,8 +1,49 @@
-fastapi
-pydantic
-python-dotenv
-openai-whisper
-gtts
-pydub
-webrtcvad
-diskcache
+# Core dependencies
+fastapi>=0.104.1,<0.110.0
+uvicorn[standard]>=0.24.0,<0.35.0
+pydantic>=2.7.4,<3.0.0
+pydantic-settings>=2.0.3,<3.0.0
+python-dotenv>=1.0.0,<2.0.0
+httpx>=0.25.0,<0.28.0
+python-multipart>=0.0.6,<0.0.7
+
+# Multiple STT (Speech-to-Text) providers
+speechrecognition>=3.10.0               # Provides multiple STT APIs
+whisper>=1.1.10                         # OpenAI Whisper (local)
+openai-whisper>=20231117                # OpenAI Whisper API
+pyaudio>=0.2.13                         # For microphone input
+google-cloud-speech>=2.21.0             # Google Cloud Speech-to-Text
+azure-cognitiveservices-speech>=1.30.0  # Microsoft Azure Speech Services
+vosk>=0.3.45                           # Offline speech recognition
+deepspeech>=0.9.3                      # Mozilla DeepSpeech (offline)
+
+# Multiple TTS (Text-to-Speech) providers
+pyttsx3>=2.90                          # Offline TTS engine
+gTTS>=2.3.2                            # Google Text-to-Speech
+edge-tts>=6.1.9                        # Microsoft Edge TTS
+ElevenLabs>=0.1.0                      # ElevenLabs TTS API
+AWS-TTS>=0.1.5                         # Amazon Polly TTS
+silero-tts>=0.0.1                      # Silero TTS models (offline)
+coqui-tts>=0.14.0                      # Coqui TTS (offline)
+
+# Audio processing
+numpy>=1.26.1,<2.0.0                    # Numerical operations
+librosa>=0.10.0                        # Audio loading and processing
+pydub>=0.25.1                          # Audio manipulation
+librosa>=0.10.0                        # Audio analysis
+webrtcvad>=2.0.10                      # Voice activity detection
+scipy>=1.10.1                          # Signal processing
+sounddevice>=0.4.6                     # Audio playback
+soundfile>=0.12.1                      # Audio file reading/writing
+
+# Utilities
+tenacity>=8.2.3                        # Retry logic for API calls
+loguru>=0.7.0,<1.0.0                   # Enhanced logging
+tqdm>=4.66.1                           # Progress bars
+aiofiles>=23.2.1                       # Async file operations
+requests>=2.31.0                       # HTTP requests
+diskcache>=5.4.0
+
+# Testing
+pytest>=7.0.0,<8.0.0
+pytest-asyncio>=0.21.0,<0.24.0

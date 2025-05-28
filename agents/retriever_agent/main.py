@@ -1,27 +1,38 @@
-from fastapi import FastAPI, HTTPException, Depends, status, Request, Query
+from fastapi import FastAPI, HTTPException, Depends, status, Request, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Annotated
 import logging
 import time
 import uvicorn
 from datetime import datetime
+import json
 
 from .models import (
     IngestRequest,
     QueryRequest,
     QueryResponse,
     HealthResponse,
-    Document as DocModel
+    Document as DocModel,
+    DocumentMetadata,
+    SearchResult,
+    NamespaceResponse,
+    VectorStoreStats
 )
-from .store import vector_store
+from .multi_vector_store import get_multi_vector_store, MultiVectorStore, VectorStoreType, EmbeddingModelType
 from .config import settings
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure enhanced logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+# Get vector store instance
+vector_store = get_multi_vector_store()
 
 # Rate limiting settings
 RATE_LIMIT_DURATION = 60  # seconds

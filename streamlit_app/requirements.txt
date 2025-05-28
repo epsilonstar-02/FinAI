@@ -1,5 +1,5 @@
 streamlit==1.45.1
-streamlit-audiorec==1.0.0
+streamlit-audiorec
 requests==2.31.0
 python-dotenv==1.0.0
 fpdf2==2.7.5

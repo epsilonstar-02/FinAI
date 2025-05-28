@@ -1,10 +1,29 @@
+# API Framework
 fastapi>=0.104.1
 uvicorn>=0.23.2
 pydantic>=2.5.2
 pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
 httpx>=0.25.0
+
+# Content Extraction and Processing
 langchain>=0.0.335
 unstructured>=0.10.30
 beautifulsoup4>=4.12.2
 lxml>=4.9.3
+trafilatura>=1.6.0      # High-quality web content extraction
+newspaper3k>=0.2.8      # News article extraction and curation
+feedparser>=6.0.10      # For parsing RSS feeds
+readability-lxml>=0.8.1  # Mozilla's readability algorithm for extracting article content
+
+# Financial Data Scraping
+sec-edgar-downloader>=5.0.0  # For retrieving SEC EDGAR filings
+secedgar>=0.5.0           # Another SEC filing API
+yfinance>=0.2.35          # Yahoo Finance data (including news access)
+
+# Utilities
+markdown>=3.4.3        # For formatting extracted content
+tenacity>=8.2.3        # For retries and error handling
+aiohttp>=3.8.5         # Async HTTP client alternative
+aiofiles>=23.1.0       # Async file operations
+pytz>=2023.3           # Timezone support
