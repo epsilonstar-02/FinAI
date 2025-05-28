@@ -6,5 +6,7 @@
 # pip install -r requirements.txt -r streamlit_app/requirements.txt
 
 # Streamlit extensions
-streamlit-audiorec     # Audio recording component
-requests-mock==1.11.0  # For testing HTTP requests
+streamlit-webrtc>=0.47.3  # Audio/Video streaming and recording
+av>=10.0.0,<11.0.0       # Audio/Video processing (required by streamlit-webrtc)
+numpy>=1.21.0,<2.0.0     # Required for audio processing
+requests-mock==1.11.0    # For testing HTTP requests

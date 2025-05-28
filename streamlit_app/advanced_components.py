@@ -1,78 +1,35 @@
-"""Advanced components for the FinAI Streamlit application."""
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime, timedelta
-import altair as alt
-import json
-import base64
-from io import BytesIO
-import matplotlib.pyplot as plt
-import seaborn as sns
-
 
 def render_provider_selector(section_title, providers, default=None, key_prefix=""):
-    """
-    Render a provider selection interface with radio buttons.
-    
-    Args:
-        section_title: Title for the provider section
-        providers: List of available providers
-        default: Default selected provider
-        key_prefix: Prefix for the session state key
-    
-    Returns:
-        Selected provider
-    """
     st.subheader(section_title)
     
-    # Create columns for each provider
     cols = st.columns(len(providers))
     
-    # Session state key
-    state_key = f"{key_prefix}_provider"
+    state_key = f"{key_prefix}_provider_selection"
     if state_key not in st.session_state:
-        st.session_state[state_key] = default or providers[0]
+        st.session_state[state_key] = default if default in providers else providers[0]
     
-    # Create radio buttons
     for i, provider in enumerate(providers):
         with cols[i]:
-            provider_selected = st.radio(
-                f"{provider}",
-                [provider],
-                key=f"{key_prefix}_{provider}",
-                index=0 if st.session_state[state_key] == provider else None,
-                label_visibility="collapsed"
-            )
+            is_selected = (st.session_state[state_key] == provider)
+            button_type = "primary" if is_selected else "secondary"
             
-            if provider_selected:
+            button_key = f"{key_prefix}_provider_btn_{provider}"
+
+            if st.button(provider, key=button_key, use_container_width=True, type=button_type):
                 st.session_state[state_key] = provider
-                
-            # Indicate selected with styling
-            if st.session_state[state_key] == provider:
-                st.markdown(f"<div class='selected-provider'>{provider}</div>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<div class='provider-option'>{provider}</div>", unsafe_allow_html=True)
+                st.rerun()
     
     return st.session_state[state_key]
 
 
 def render_correlation_matrix(correlation_data):
-    """
-    Render a correlation matrix heatmap.
-    
-    Args:
-        correlation_data: Dictionary of dictionaries with correlation values
-        
-    Returns:
-        Plotly figure object
-    """
-    # Convert to DataFrame
     df = pd.DataFrame(correlation_data)
     
-    # Create heatmap
     fig = px.imshow(
         df,
         text_auto=".2f",
@@ -88,46 +45,39 @@ def render_correlation_matrix(correlation_data):
         coloraxis_colorbar=dict(
             title="Correlation",
             thicknessmode="pixels", 
-            thickness=20,
+            thickness=15,
             lenmode="pixels", 
             len=400,
-        )
+        ),
+        title_x=0.5
     )
     
     return fig
 
 
 def render_risk_metrics_radar(risk_metrics, ticker):
-    """
-    Render a radar chart of risk metrics for a specific ticker.
-    
-    Args:
-        risk_metrics: Dictionary of risk metrics for the ticker
-        ticker: Ticker symbol
-    
-    Returns:
-        Plotly figure object
-    """
     if ticker not in risk_metrics:
+        st.warning(f"No risk metrics available for {ticker}.")
         return None
     
     metrics = risk_metrics[ticker]
     
-    # Normalize metrics for radar chart (0-1 scale)
     metrics_to_plot = {
-        "Sharpe Ratio": min(max(metrics.get("sharpe_ratio", 0), 0) / 3, 1),  # Good Sharpe is 1-3
-        "Sortino Ratio": min(max(metrics.get("sortino_ratio", 0), 0) / 3, 1),  # Good Sortino is 1-3
-        "1-Max Drawdown": 1 - min(metrics.get("max_drawdown", 0), 1),  # Lower drawdown is better
-        "1-VaR": 1 - min(abs(metrics.get("var_95", 0)), 0.2) / 0.2,  # Lower VaR is better
-        "Beta (1.0 is neutral)": 1 - min(abs(metrics.get("beta", 1) - 1), 1)  # Closer to 1 is more neutral
+        "Sharpe Ratio": min(max(metrics.get("sharpe_ratio", 0), -1) / 3, 1),
+        "Sortino Ratio": min(max(metrics.get("sortino_ratio", 0), -1) / 3, 1),
+        "1 - Max Drawdown": 1 - min(abs(metrics.get("max_drawdown", 0)), 1),
+        "1 - VaR (95%)": 1 - min(abs(metrics.get("var_95", 0.2)), 1) / 1,
+        "Beta": 1 - min(abs(metrics.get("beta", 1.0) - 1.0), 1.0) / 1.0
     }
     
     categories = list(metrics_to_plot.keys())
     values = list(metrics_to_plot.values())
     
-    # Close the loop for the radar chart
-    categories.append(categories[0])
-    values.append(values[0])
+    values = [max(0, min(1, v)) for v in values]
+
+    if categories:
+        categories.append(categories[0])
+        values.append(values[0])
     
     fig = go.Figure()
     
@@ -136,110 +86,97 @@ def render_risk_metrics_radar(risk_metrics, ticker):
         theta=categories,
         fill='toself',
         name=ticker,
-        line_color='rgba(45, 146, 195, 0.8)',
-        fillcolor='rgba(45, 146, 195, 0.3)'
+        line_color='rgba(37, 99, 235, 0.9)', 
+        fillcolor='rgba(37, 99, 235, 0.4)'
     ))
     
     fig.update_layout(
         polar=dict(
             radialaxis=dict(
                 visible=True,
-                range=[0, 1]
+                range=[0, 1],
+                tickfont=dict(size=10)
+            ),
+            angularaxis=dict(
+                tickfont=dict(size=10)
             )
         ),
-        showlegend=True,
-        title=f"Risk Profile: {ticker}"
+        showlegend=False,
+        title=f"Risk Profile: {ticker}",
+        title_x=0.5,
+        height=350,
+        margin=dict(l=40, r=40, t=60, b=40)
     )
     
     return fig
 
 
 def render_portfolio_exposures(exposures):
-    """
-    Render a pie chart of portfolio exposures.
-    
-    Args:
-        exposures: Dictionary of asset symbols to exposure percentages
-        
-    Returns:
-        Plotly figure object
-    """
     labels = list(exposures.keys())
-    values = [exposures[symbol] * 100 for symbol in labels]  # Convert to percentages
+    values = [exposures[symbol] * 100 for symbol in labels]
     
     fig = go.Figure(data=[go.Pie(
         labels=labels,
         values=values,
         hole=.4,
         textinfo='label+percent',
-        marker=dict(colors=px.colors.qualitative.Plotly)
+        marker=dict(colors=px.colors.qualitative.Plotly),
+        hoverinfo='label+percent+value',
+        textfont_size=11
     )])
     
     fig.update_layout(
         title="Portfolio Allocation",
-        height=400,
-        margin=dict(t=30, b=0, l=0, r=0)
+        title_x=0.5,
+        height=380,
+        margin=dict(t=50, b=20, l=20, r=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     
     return fig
 
 
 def render_price_changes(changes):
-    """
-    Render a horizontal bar chart of price changes.
-    
-    Args:
-        changes: Dictionary of asset symbols to percentage changes
-        
-    Returns:
-        Plotly figure object
-    """
     symbols = list(changes.keys())
-    pct_changes = [changes[symbol] * 100 for symbol in symbols]  # Convert to percentages
+    pct_changes = [changes[symbol] * 100 for symbol in symbols]
     
-    # Sort by change value
     sorted_indices = np.argsort(pct_changes)
     symbols = [symbols[i] for i in sorted_indices]
     pct_changes = [pct_changes[i] for i in sorted_indices]
     
-    # Create colors based on positive/negative
-    colors = ['green' if x >= 0 else 'red' for x in pct_changes]
+    # Assuming CSS variables --stock-up-color and --stock-down-color are defined and accessible
+    # If Plotly cannot access CSS variables directly, these should be replaced with actual hex/rgba values
+    colors = ['#10b981' if x >= 0 else '#ef4444' for x in pct_changes] # Example: using hex from your CSS
     
     fig = go.Figure()
     fig.add_trace(go.Bar(
         y=symbols,
         x=pct_changes,
         orientation='h',
-        marker_color=colors,
+        marker_color=colors, 
         text=[f"{x:.2f}%" for x in pct_changes],
-        textposition='auto'
+        textposition='auto',
+        insidetextanchor='middle' if all(abs(x) > 5 for x in pct_changes) else 'auto',
+        textfont_size=10
     ))
     
     fig.update_layout(
         title="Daily Price Changes",
+        title_x=0.5,
         xaxis_title="Percent Change",
-        height=400,
-        margin=dict(t=30, b=0, l=0, r=0)
+        yaxis=dict(tickfont=dict(size=10)),
+        height=380,
+        margin=dict(t=50, b=40, l=10, r=10)
     )
     
     return fig
 
 
 def render_volatility_comparison(volatility):
-    """
-    Render a bar chart comparing volatility across assets.
-    
-    Args:
-        volatility: Dictionary of asset symbols to volatility values
-        
-    Returns:
-        Plotly figure object
-    """
     symbols = list(volatility.keys())
-    vol_values = [volatility[symbol] * 100 for symbol in symbols]  # Convert to percentages
+    vol_values = [volatility[symbol] * 100 for symbol in symbols]
     
-    # Sort by volatility
-    sorted_indices = np.argsort(vol_values)[::-1]  # Descending
+    sorted_indices = np.argsort(vol_values)[::-1]
     symbols = [symbols[i] for i in sorted_indices]
     vol_values = [vol_values[i] for i in sorted_indices]
     
@@ -247,339 +184,105 @@ def render_volatility_comparison(volatility):
     fig.add_trace(go.Bar(
         x=symbols,
         y=vol_values,
-        marker_color='rgba(76, 114, 176, 0.8)',
+        marker_color='rgba(15, 118, 110, 0.8)', 
         text=[f"{x:.2f}%" for x in vol_values],
-        textposition='auto'
+        textposition='auto',
+        textfont_size=10
     ))
     
     fig.update_layout(
         title="Asset Volatility Comparison",
+        title_x=0.5,
         yaxis_title="Volatility (%)",
-        height=400,
-        margin=dict(t=30, b=0, l=0, r=0)
+        xaxis=dict(tickfont=dict(size=10)),
+        height=380,
+        margin=dict(t=50, b=40, l=10, r=10)
     )
     
     return fig
 
 
-def render_audio_recorder():
-    """
-    Render an audio recorder with visualization.
+def render_model_selector(show_subheader=True): # Added show_subheader parameter
+    if show_subheader:
+        st.subheader("Model Selection") # Controlled by the new parameter
     
-    Returns:
-        Audio bytes if recorded
-    """
-    st.markdown("<div class='audio-recorder-container'>", unsafe_allow_html=True)
-    st.markdown("<h3>Voice Input</h3>", unsafe_allow_html=True)
+    model_tabs = st.tabs(["💬 LLM", "🎤 Voice", "📊 Analyze"])
     
-    # Create container for visualization
-    visualizer_container = st.empty()
-    visualizer_container.markdown("<div class='audio-visualizer'></div>", unsafe_allow_html=True)
-    
-    # Create columns for record and stop buttons
-    col1, col2, col3 = st.columns([1, 1, 1])
-    
-    with col1:
-        record_button = st.button("🎙️ Record", key="record_button")
-    
-    with col2:
-        stop_button = st.button("⏹️ Stop", key="stop_button")
-    
-    with col3:
-        clear_button = st.button("🗑️ Clear", key="clear_button")
-    
-    # Inject JavaScript for audio recording
-    st.markdown("""
-    <script>
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        let mediaRecorder;
-        let audioChunks = [];
-        let recording = false;
-        
-        async function startRecording() {
-            if (recording) return;
-            
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                mediaRecorder = new MediaRecorder(stream);
-                audioChunks = [];
-                
-                mediaRecorder.addEventListener("dataavailable", event => {
-                    audioChunks.push(event.data);
-                });
-                
-                mediaRecorder.start();
-                recording = true;
-                
-                // Set up visualization
-                const source = audioContext.createMediaStreamSource(stream);
-                const analyser = audioContext.createAnalyser();
-                analyser.fftSize = 256;
-                source.connect(analyser);
-                
-                // Visualize the audio
-                const bufferLength = analyser.frequencyBinCount;
-                const dataArray = new Uint8Array(bufferLength);
-                
-                function draw() {
-                    if (!recording) return;
-                    
-                    requestAnimationFrame(draw);
-                    analyser.getByteFrequencyData(dataArray);
-                    
-                    const visualizer = document.querySelector('.audio-visualizer');
-                    if (visualizer) {
-                        visualizer.innerHTML = '';
-                        
-                        for (let i = 0; i < bufferLength; i++) {
-                            const bar = document.createElement('div');
-                            const height = dataArray[i] / 2;
-                            bar.style.height = height + 'px';
-                            bar.className = 'visualizer-bar';
-                            visualizer.appendChild(bar);
-                        }
-                    }
-                }
-                
-                draw();
-            } catch (err) {
-                console.error("Error accessing microphone:", err);
-                alert("Could not access microphone. Please ensure you have granted permission.");
-            }
-        }
-        
-        async function stopRecording() {
-            if (!recording || !mediaRecorder) return;
-            
-            mediaRecorder.stop();
-            recording = false;
-            
-            const audioBlob = new Promise(resolve => {
-                mediaRecorder.addEventListener("stop", () => {
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                    resolve(audioBlob);
-                });
-            });
-            
-            const blob = await audioBlob;
-            const reader = new FileReader();
-            
-            reader.readAsDataURL(blob);
-            reader.onloadend = function() {
-                const base64data = reader.result.split(',')[1];
-                window.parent.postMessage({
-                    type: "audioRecorded",
-                    data: base64data
-                }, "*");
-            };
-            
-            // Clear visualization
-            const visualizer = document.querySelector('.audio-visualizer');
-            if (visualizer) {
-                visualizer.innerHTML = '';
-            }
-        }
-        
-        function clearRecording() {
-            audioChunks = [];
-            recording = false;
-            
-            // Clear visualization
-            const visualizer = document.querySelector('.audio-visualizer');
-            if (visualizer) {
-                visualizer.innerHTML = '';
-            }
-            
-            window.parent.postMessage({
-                type: "audioClear"
-            }, "*");
-        }
-        
-        // Listen for button clicks from Streamlit
-        window.addEventListener("message", (event) => {
-            if (event.data.type === 'streamlit:componentReady') {
-                // Setup listeners for our buttons
-                const buttons = parent.document.querySelectorAll('button');
-                
-                buttons.forEach(button => {
-                    button.addEventListener('click', function(e) {
-                        if (this.innerText.includes('Record')) {
-                            startRecording();
-                        } else if (this.innerText.includes('Stop')) {
-                            stopRecording();
-                        } else if (this.innerText.includes('Clear')) {
-                            clearRecording();
-                        }
-                    });
-                });
-            }
-        });
-    </script>
-    
-    <style>
-        .audio-visualizer {
-            display: flex;
-            align-items: flex-end;
-            height: 100px;
-            width: 100%;
-            background-color: rgba(0, 0, 0, 0.1);
-            border-radius: 4px;
-            overflow: hidden;
-            padding: 2px;
-        }
-        
-        .visualizer-bar {
-            width: 4px;
-            background-color: #ff4b4b;
-            margin: 0 1px;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    st.markdown("</div>", unsafe_allow_html=True)
-    
-    # Create a placeholder for the recorded audio
-    audio_placeholder = st.empty()
-    
-    # Create session state for recorded audio
-    if "audio_bytes" not in st.session_state:
-        st.session_state.audio_bytes = None
-    
-    # JavaScript callback handler
-    st.markdown("""
-    <script>
-        window.addEventListener("message", (event) => {
-            if (event.data.type === "audioRecorded") {
-                const data = event.data.data;
-                
-                // Store the base64 audio data in Streamlit's session state
-                // We need to use Streamlit's setComponentValue API
-                if (window.parent.Streamlit) {
-                    window.parent.Streamlit.setComponentValue({
-                        type: "audio",
-                        data: data
-                    });
-                }
-            } else if (event.data.type === "audioClear") {
-                if (window.parent.Streamlit) {
-                    window.parent.Streamlit.setComponentValue({
-                        type: "audioClear"
-                    });
-                }
-            }
-        });
-    </script>
-    """, unsafe_allow_html=True)
-    
-    return st.session_state.audio_bytes
+    # Initialize variables to ensure they are always defined
+    llm_provider = "Gemini" # Default provider
+    llm_model = "gemini-flash" # Default model for the default provider
+    temperature = 0.7
+    max_tokens = 1000
+    stt_provider = "Whisper"
+    tts_provider = "Google TTS"
+    voice = "en-US-Neural2-F"
+    speaking_rate = 1.0
+    pitch = 0.0
+    analysis_provider = "default"
+    include_correlations = True
+    include_risk_metrics = True
 
-
-def render_model_selector():
-    """
-    Render a model selector with tabs for different agent types.
-    
-    Returns:
-        Dictionary with selected models for each agent type
-    """
-    st.subheader("Model Selection")
-    
-    model_tabs = st.tabs(["Language Models", "Voice Models", "Analysis Providers"])
-    
-    with model_tabs[0]:
+    with model_tabs[0]: 
+        st.markdown("##### LLM Configuration") 
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("#### LLM Provider")
             llm_provider = st.selectbox(
-                "Select LLM Provider",
+                "LLM Provider", 
                 ["Gemini", "OpenAI", "Anthropic", "HuggingFace"],
-                key="llm_provider"
+                key="llm_provider_selector" 
             )
         
         with col2:
-            st.markdown("#### Model")
-            # Show different models based on provider
             if llm_provider == "Gemini":
-                llm_model = st.selectbox(
-                    "Select Model",
-                    ["gemini-flash", "gemini-pro", "gemini-1.5-pro"],
-                    key="gemini_model"
-                )
+                llm_model = st.selectbox("Model", ["gemini-flash", "gemini-pro", "gemini-1.5-pro"], key="gemini_model_selector")
             elif llm_provider == "OpenAI":
-                llm_model = st.selectbox(
-                    "Select Model",
-                    ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
-                    key="openai_model"
-                )
+                llm_model = st.selectbox("Model", ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"], key="openai_model_selector")
             elif llm_provider == "Anthropic":
-                llm_model = st.selectbox(
-                    "Select Model",
-                    ["claude-2", "claude-instant", "claude-3-opus"],
-                    key="anthropic_model"
-                )
-            else:
-                llm_model = st.selectbox(
-                    "Select Model",
-                    ["llama-2-7b", "mistral-7b", "falcon-7b"],
-                    key="hf_model"
-                )
+                llm_model = st.selectbox("Model", ["claude-2", "claude-instant", "claude-3-opus"], key="anthropic_model_selector")
+            else: 
+                llm_model = st.selectbox("Model", ["llama-2-7b", "mistral-7b", "falcon-7b"], key="hf_model_selector")
         
-        # LLM parameters
-        st.markdown("#### Parameters")
-        col1, col2 = st.columns(2)
-        with col1:
-            temperature = st.slider("Temperature", 0.0, 1.0, 0.7, 0.1, key="temperature")
-        with col2:
-            max_tokens = st.slider("Max Tokens", 100, 2000, 1000, 100, key="max_tokens")
+        st.markdown("###### Parameters") 
+        col1_params, col2_params = st.columns(2)
+        with col1_params:
+            temperature = st.slider("Temperature", 0.0, 1.0, 0.7, 0.1, key="temperature_slider")
+        with col2_params:
+            max_tokens = st.slider("Max Tokens", 100, 4000, 1000, 100, key="max_tokens_slider")
     
-    with model_tabs[1]:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("#### STT Provider")
-            stt_provider = st.selectbox(
-                "Select STT Provider",
-                ["Whisper", "Google Cloud", "Azure", "Vosk"],
-                key="stt_provider"
-            )
+    with model_tabs[1]: 
+        st.markdown("##### Voice Agent Configuration") 
+        col1_voice, col2_voice = st.columns(2)
+        with col1_voice:
+            stt_provider = st.selectbox("STT Provider", ["Whisper", "Google Cloud", "Azure", "Vosk"], key="stt_provider_selector")
+        with col2_voice:
+            tts_provider = st.selectbox("TTS Provider", ["Google TTS", "Edge TTS", "ElevenLabs", "Amazon Polly"], key="tts_provider_selector")
         
-        with col2:
-            st.markdown("#### TTS Provider")
-            tts_provider = st.selectbox(
-                "Select TTS Provider",
-                ["Google TTS", "Edge TTS", "ElevenLabs", "Amazon Polly"],
-                key="tts_provider"
-            )
-        
-        # Voice parameters
-        st.markdown("#### Voice Parameters")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            voice = st.selectbox(
-                "Voice",
-                ["en-US-Neural2-F", "en-US-Neural2-M", "en-GB-Neural2-F", "en-GB-Neural2-M"],
-                key="voice"
-            )
-        with col2:
-            speaking_rate = st.slider("Speaking Rate", 0.5, 2.0, 1.0, 0.1, key="speaking_rate")
-        with col3:
-            pitch = st.slider("Pitch", -10.0, 10.0, 0.0, 0.5, key="pitch")
+        st.markdown("###### TTS Parameters") 
+        col1_tts, col2_tts, col3_tts = st.columns(3)
+        with col1_tts:
+            voice = st.selectbox("Voice Accent", ["en-US-Neural2-F", "en-US-Neural2-M", "en-GB-Neural2-F", "en-GB-Neural2-M"], key="voice_selector")
+        with col2_tts:
+            speaking_rate = st.slider("Speaking Rate", 0.5, 2.0, 1.0, 0.1, key="speaking_rate_slider")
+        with col3_tts:
+            pitch = st.slider("Pitch", -10.0, 10.0, 0.0, 0.5, key="pitch_slider")
     
-    with model_tabs[2]:
-        st.markdown("#### Analysis Provider")
+    with model_tabs[2]: 
+        st.markdown("##### Analysis Engine") 
         analysis_provider = st.radio(
-            "Select Analysis Provider",
+            "Provider", 
             ["default", "advanced"],
-            key="analysis_provider",
-            horizontal=True
+            key="analysis_provider_selector",
+            horizontal=True,
+            label_visibility="collapsed" 
         )
         
-        st.markdown("#### Analysis Options")
-        col1, col2 = st.columns(2)
-        with col1:
-            include_correlations = st.checkbox("Include Correlations", value=True, key="include_correlations")
-        with col2:
-            include_risk_metrics = st.checkbox("Include Risk Metrics", value=True, key="include_risk_metrics")
+        st.markdown("###### Options") 
+        col1_analysis, col2_analysis = st.columns(2)
+        with col1_analysis:
+            include_correlations = st.checkbox("Correlations", value=True, key="include_correlations_cb")
+        with col2_analysis:
+            include_risk_metrics = st.checkbox("Risk Metrics", value=True, key="include_risk_metrics_cb")
     
-    # Collect all selections
     return {
         "llm": {
             "provider": llm_provider,
@@ -603,98 +306,114 @@ def render_model_selector():
 
 
 def render_analysis_dashboard(analysis_result):
-    """
-    Render a comprehensive financial analysis dashboard.
-    
-    Args:
-        analysis_result: Analysis result from the analysis agent
-    """
     if not analysis_result:
-        st.warning("No analysis data available")
+        st.info("No analysis data available to display.")
         return
     
-    # Extract components
     exposures = analysis_result.get("exposures", {})
     changes = analysis_result.get("changes", {})
     volatility = analysis_result.get("volatility", {})
     correlations = analysis_result.get("correlations")
     risk_metrics = analysis_result.get("risk_metrics")
-    summary = analysis_result.get("summary", "No summary available")
+    summary = analysis_result.get("summary", "No summary available.")
     provider_info = analysis_result.get("provider_info", {})
     
-    # Create dashboard layout
     st.markdown("### Financial Analysis Dashboard")
     
-    # Show provider info
-    st.markdown(f"""
-    <div class="provider-info">
-        Analysis by: <b>{provider_info.get('name', 'Unknown')}</b> 
-        (v{provider_info.get('version', '1.0.0')})
-        {' ⚠️ Fallback provider used' if provider_info.get('fallback_used', False) else ''}
-    </div>
-    """, unsafe_allow_html=True)
+    if provider_info:
+        st.markdown(f"""
+        <div class="provider-info" style="font-size: 0.9em; color: var(--text-tertiary); margin-bottom: 1rem;">
+            Analysis by: <b>{provider_info.get('name', 'Unknown')}</b> 
+            (v{provider_info.get('version', 'N/A')})
+            {' <span style="color: var(--warning-color);">⚠️ Fallback provider used</span>' if provider_info.get('fallback_used', False) else ''}
+        </div>
+        """, unsafe_allow_html=True)
     
-    # Summary section
-    st.markdown("#### Analysis Summary")
-    st.markdown(f"<div class='analysis-summary'>{summary.replace('- ', '• ').replace('\\n', '<br>')}</div>", unsafe_allow_html=True)
+    st.markdown("#### Executive Summary")
+    formatted_summary = summary.replace('- ', '• ').replace('\n', '<br>')
+    st.markdown(f"<div class='analysis-summary' style='background-color: var(--light-gray); padding: 1rem; border-radius: var(--radius-md); margin-bottom: 1.5rem;'>{formatted_summary}</div>", unsafe_allow_html=True)
     
-    # Portfolio exposures
-    if exposures:
-        st.plotly_chart(render_portfolio_exposures(exposures), use_container_width=True)
+    row1_col1, row1_col2 = st.columns(2)
     
-    # Price changes and volatility
-    col1, col2 = st.columns(2)
+    with row1_col1:
+        if exposures:
+            st.plotly_chart(render_portfolio_exposures(exposures), use_container_width=True)
+        else:
+            st.caption("No exposure data.")
     
-    with col1:
+    with row1_col2:
         if changes:
             st.plotly_chart(render_price_changes(changes), use_container_width=True)
-    
-    with col2:
-        if volatility:
-            st.plotly_chart(render_volatility_comparison(volatility), use_container_width=True)
-    
-    # Correlations
+        else:
+            st.caption("No price change data.")
+
+    if volatility:
+        st.plotly_chart(render_volatility_comparison(volatility), use_container_width=True)
+    else:
+        st.caption("No volatility data.")
+            
     if correlations:
         st.markdown("#### Asset Correlations")
         st.plotly_chart(render_correlation_matrix(correlations), use_container_width=True)
+    else:
+        st.caption("No correlation data.")
     
-    # Risk metrics
     if risk_metrics:
         st.markdown("#### Risk Analysis")
-        
-        # Create tabs for each ticker
         tickers = list(risk_metrics.keys())
         if tickers:
-            risk_tabs = st.tabs(tickers)
-            
-            for i, ticker in enumerate(tickers):
-                with risk_tabs[i]:
-                    col1, col2 = st.columns([1, 1])
+            risk_tabs_ctx = None # Initialize to avoid UnboundLocalError
+            if len(tickers) > 3:
+                selected_ticker_for_risk = st.selectbox("Select Ticker for Risk Details", tickers, key="risk_ticker_selector")
+                tickers_to_display = [selected_ticker_for_risk]
+            else:
+                risk_tabs = st.tabs(tickers)
+                tickers_to_display = tickers
+                risk_tabs_ctx = risk_tabs 
+
+            for i, ticker_key in enumerate(tickers_to_display):
+                current_display_context = st 
+                if not (len(tickers) > 3) and risk_tabs_ctx: 
+                    current_display_context = risk_tabs_ctx[i]
+
+                with current_display_context:
+                    if not (len(tickers) > 3) and len(tickers_to_display) > 1 : 
+                        st.markdown(f"##### {ticker_key} Risk Profile")
+
+                    metrics_data = risk_metrics.get(ticker_key)
+                    if not metrics_data:
+                        st.warning(f"No risk metrics found for {ticker_key}")
+                        continue
+
+                    col_risk_table, col_risk_radar = st.columns([1, 1])
+                    with col_risk_table:
+                        st.markdown(f"###### Key Metrics: {ticker_key}")
+                        
+                        available_metrics = {
+                            'Sharpe Ratio': f"{metrics_data.get('sharpe_ratio', 'N/A'):.2f}" if isinstance(metrics_data.get('sharpe_ratio'), (int, float)) else 'N/A',
+                            'Sortino Ratio': f"{metrics_data.get('sortino_ratio', 'N/A'):.2f}" if isinstance(metrics_data.get('sortino_ratio'), (int, float)) else 'N/A',
+                            'Max Drawdown': f"{metrics_data.get('max_drawdown', 'N/A'):.2%}" if isinstance(metrics_data.get('max_drawdown'), (int, float)) else 'N/A',
+                            'VaR (95%)': f"{metrics_data.get('var_95', 'N/A'):.2%}" if isinstance(metrics_data.get('var_95'), (int, float)) else 'N/A',
+                            'CVaR (95%)': f"{metrics_data.get('cvar_95', 'N/A'):.2%}" if isinstance(metrics_data.get('cvar_95'), (int, float)) else 'N/A',
+                            'Beta': f"{metrics_data.get('beta', 'N/A'):.2f}" if isinstance(metrics_data.get('beta'), (int, float)) else 'N/A',
+                            'Calmar Ratio': f"{metrics_data.get('calmar_ratio', 'N/A'):.2f}" if isinstance(metrics_data.get('calmar_ratio'), (int, float)) else 'N/A'
+                        }
+                        
+                        metrics_df_data = {'Metric': [], 'Value': []}
+                        for m, v in available_metrics.items():
+                            metrics_df_data['Metric'].append(m)
+                            metrics_df_data['Value'].append(v)
+                        
+                        metrics_df = pd.DataFrame(metrics_df_data)
+                        st.table(metrics_df.set_index('Metric'))
                     
-                    with col1:
-                        metrics = risk_metrics[ticker]
-                        st.markdown(f"#### {ticker} Risk Metrics")
-                        metrics_df = pd.DataFrame({
-                            'Metric': [
-                                'Sharpe Ratio',
-                                'Sortino Ratio',
-                                'Max Drawdown',
-                                'Value at Risk (95%)',
-                                'Conditional VaR (95%)',
-                                'Beta',
-                                'Calmar Ratio'
-                            ],
-                            'Value': [
-                                f"{metrics.get('sharpe_ratio', 0):.2f}",
-                                f"{metrics.get('sortino_ratio', 0):.2f}",
-                                f"{metrics.get('max_drawdown', 0):.2%}",
-                                f"{metrics.get('var_95', 0):.2%}",
-                                f"{metrics.get('cvar_95', 0):.2%}" if 'cvar_95' in metrics else 'N/A',
-                                f"{metrics.get('beta', 0):.2f}",
-                                f"{metrics.get('calmar_ratio', 0):.2f}" if 'calmar_ratio' in metrics else 'N/A'
-                            ]
-                        })
-                        st.table(metrics_df)
-                    
-                    with col2:
-                        st.plotly_chart(render_risk_metrics_radar(risk_metrics, ticker), use_container_width=True)
+                    with col_risk_radar:
+                        radar_fig = render_risk_metrics_radar(risk_metrics, ticker_key)
+                        if radar_fig:
+                            st.plotly_chart(radar_fig, use_container_width=True)
+                        else:
+                            st.caption(f"Radar chart not available for {ticker_key}.")
+        else:
+            st.caption("No tickers found for risk metrics.")
+    else:
+        st.caption("No risk metrics data.")

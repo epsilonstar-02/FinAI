@@ -6,25 +6,14 @@ from datetime import datetime
 
 
 def render_card(title, content, icon=None, card_type="default"):
-    """
-    Renders a styled card with title and content.
-    
-    Args:
-        title: The card title
-        content: The card content text
-        icon: Optional icon name from FontAwesome
-        card_type: Type of card (default, success, warning, error, info)
-    """
-    # Determine card class based on type
     card_class = f"card card-{card_type}"
+    icon_html = f'<i class="fas {icon} card-icon"></i>' if icon else ''
     
-    # Add icon if provided
-    icon_html = f'<i class="fas fa-{icon} card-icon"></i>' if icon else ''
+    import re
+    content_html = content.replace('\n', '<br>')
+    content_html = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', content_html) # Bold
+    content_html = re.sub(r'\*(.*?)\*', r'<em>\1</em>', content_html)       # Italic
     
-    # Markdown format the content
-    content = content.replace('\n', '<br>')
-    
-    # Render timestamp
     timestamp = datetime.now().strftime("%H:%M:%S")
     
     card_html = f"""
@@ -34,61 +23,46 @@ def render_card(title, content, icon=None, card_type="default"):
             <div class="card-title">{title}</div>
             <div class="card-timestamp">{timestamp}</div>
         </div>
-        <div class="card-content">{content}</div>
+        <div class="card-content">{content_html}</div>
     </div>
     """
     st.markdown(card_html, unsafe_allow_html=True)
 
 
-def render_audio_player(audio_bytes, autoplay=False):
+def render_audio_player(audio_data, autoplay=False, format="audio/mp3"):
     """
-    Renders an audio player with the provided audio bytes.
-    
+    Renders an audio player.
     Args:
-        audio_bytes: The audio data in bytes
-        autoplay: Whether to autoplay the audio
+        audio_data: Bytes of the audio file or a URL string.
+        autoplay: Whether to autoplay the audio.
+        format: The audio format string.
     """
-    if audio_bytes:
-        st.markdown("<div class='audio-container'>", unsafe_allow_html=True)
-        st.audio(audio_bytes, format="audio/mp3")
+    if audio_data:
+        st.markdown("<div class='audio-player-container'>", unsafe_allow_html=True)
+        st.audio(audio_data, format=format, start_time=0)
         st.markdown("</div>", unsafe_allow_html=True)
         
-        # Auto-play script if enabled
         if autoplay:
             st.markdown("""
             <script>
                 setTimeout(function() {
-                    document.querySelector('audio').play();
-                }, 1000);
+                    const audioElements = document.querySelectorAll('audio');
+                    if (audioElements.length > 0) {
+                        audioElements[audioElements.length - 1].play().catch(e => console.warn("Autoplay prevented: ", e));
+                    }
+                }, 500);
             </script>
             """, unsafe_allow_html=True)
 
 
-def show_progress_step(name, latency_ms):
+def show_progress_step(name, latency_ms_simulated):
     """
-    Shows a progress step with a simulated delay.
-    
-    Args:
-        name: The name of the step
-        latency_ms: The simulated latency in milliseconds
+    Shows a progress step.
     """
-    start_time = time.time()
-    with st.spinner(f"{name}..."):
-        time.sleep(latency_ms / 1000.0)
-    elapsed = time.time() - start_time
-    st.markdown(f"<div class='step-complete'><i class='fas fa-check-circle'></i> {name} completed in {elapsed:.2f}s</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='step-complete'><i class='fas fa-check-circle'></i> {name} completed.</div>", unsafe_allow_html=True)
 
 
 def render_stock_info(ticker, price, change_pct):
-    """
-    Renders a stock info card with ticker, price and percent change.
-    
-    Args:
-        ticker: Stock ticker symbol
-        price: Current price
-        change_pct: Percentage change
-    """
-    # Determine if stock is up or down
     change_class = "stock-up" if change_pct >= 0 else "stock-down"
     change_icon = "▲" if change_pct >= 0 else "▼"
     
@@ -105,40 +79,36 @@ def render_stock_info(ticker, price, change_pct):
 
 
 def render_market_chart(data):
-    """
-    Renders a simple stock chart.
-    
-    Args:
-        data: DataFrame with date and price columns
-    """
-    # Convert to DataFrame if not already
     if not isinstance(data, pd.DataFrame):
         data = pd.DataFrame(data)
     
-    # Create the chart
-    chart = alt.Chart(data).mark_line().encode(
-        x=alt.X('date:T', title='Date'),
-        y=alt.Y('price:Q', title='Price ($)'),
-        tooltip=['date', 'price']
+    if 'date' not in data.columns or 'price' not in data.columns:
+        st.warning("Market chart data requires 'date' and 'price' columns.")
+        return
+
+    data['date'] = pd.to_datetime(data['date'])
+
+    chart = alt.Chart(data).mark_line(
+        point=alt.OverlayMarkDef(size=20, filled=False, strokeWidth=1) # Color will be handled by theme
+        # line=alt.LineConfig(strokeWidth=2) # Color will be handled by theme, or set explicitly below
+    ).encode(
+        x=alt.X('date:T', title='Date', axis=alt.Axis(format='%b %d', labelAngle=-45)),
+        y=alt.Y('price:Q', title='Price ($)', scale=alt.Scale(zero=False)),
+        tooltip=[alt.Tooltip('date:T', title='Date', format='%Y-%m-%d'), alt.Tooltip('price:Q', title='Price', format='$.2f')],
+        color=alt.value('#2563eb') # Optionally, set a specific primary line color from your theme (e.g., light theme's primary blue: --primary-color)
     ).properties(
-        width='container',
-        height=300,
-        title='Market Performance'
+        height=300
     ).interactive()
     
-    st.altair_chart(chart, use_container_width=True)
+    # Use theme="streamlit" for better integration with Streamlit's native light/dark themes
+    st.altair_chart(chart, use_container_width=True, theme="streamlit")
 
 
-def render_tabs(tabs_content):
-    """
-    Renders custom styled tabs.
-    
-    Args:
-        tabs_content: Dictionary of tab titles and their content functions
-    """
+def render_tabs(tabs_content: dict):
     tab_titles = list(tabs_content.keys())
-    tabs = st.tabs(tab_titles)
     
-    for i, tab in enumerate(tabs):
-        with tab:
-            tabs_content[tab_titles[i]]()
+    selected_tabs = st.tabs(tab_titles)
+    
+    for i, tab_title in enumerate(tab_titles):
+        with selected_tabs[i]:
+            tabs_content[tab_title]()

@@ -1,285 +1,570 @@
 /* General Styles */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-@import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Roboto:wght@300;400;500;700&family=Poppins:wght@300;400;500;600;700&display=swap');
+@import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css');
 
 :root {
-    --primary-color: #1E88E5;
-    --secondary-color: #00897B;
-    --tertiary-color: #5C6BC0;
-    --background-color: #FFFFFF;
-    --text-color: #212121;
-    --card-bg-color: #F5F7FA;
-    --card-border-color: #E0E0E0;
-    --success-color: #4CAF50;
-    --warning-color: #FF9800;
-    --error-color: #F44336;
-    --info-color: #2196F3;
-    --light-gray: #F0F2F5;
-    --medium-gray: #B0BEC5;
-    --dark-gray: #607D8B;
-    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.05);
-    --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.1);
-    --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.15);
+    /* Main Color Palette - Financial Theme */
+    --primary-color: #2563eb;           /* Royal Blue */
+    --primary-light: #60a5fa;           /* Light Blue */
+    --primary-dark: #1d4ed8;            /* Dark Blue */
+    --secondary-color: #0f766e;         /* Teal */
+    --secondary-light: #5eead4;         /* Light Teal */
+    --accent-color: #7c3aed;            /* Purple */
+    --accent-light: #c4b5fd;            /* Light Purple */
+    
+    /* UI Elements */
+    --background-color: #f8fafc;        /* Off-White */
+    --card-bg-color: #ffffff;           /* White */
+    --card-border-color: #e2e8f0;       /* Light Gray */
+    --text-color: #0f172a;              /* Dark Blue-Gray */
+    --text-secondary: #475569;          /* Medium Blue-Gray */
+    --text-tertiary: #64748b;           /* Light Blue-Gray */
+    
+    /* Status Colors */
+    --success-color: #16a34a;           /* Green */
+    --warning-color: #f59e0b;           /* Amber */
+    --error-color: #dc2626;             /* Red */
+    --info-color: #0ea5e9;              /* Sky Blue */
+    
+    /* Grays */
+    --light-gray: #f1f5f9;              /* Slate 100 */
+    --medium-gray: #94a3b8;             /* Slate 400 */
+    --dark-gray: #334155;               /* Slate 700 */
+    
+    /* Effects */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+    
+    /* Radii */
     --radius-sm: 4px;
     --radius-md: 8px;
     --radius-lg: 12px;
-    --font-sans: 'Inter', sans-serif;
-    --stock-up-color: #4CAF50;
-    --stock-down-color: #F44336;
+    --radius-xl: 16px;
+    
+    /* Typography */
+    --font-primary: 'Inter', system-ui, sans-serif;
+    --font-secondary: 'Poppins', system-ui, sans-serif;
+    --font-mono: 'Roboto Mono', monospace;
+    
+    /* Market Indicators */
+    --stock-up-color: #10b981;          /* Emerald 500 */
+    --stock-down-color: #ef4444;        /* Red 500 */
+    
+    /* Transitions */
+    --transition-fast: 150ms ease;
+    --transition-normal: 250ms ease;
+    --transition-slow: 350ms ease;
 }
 
 [data-theme="dark"] {
-    --primary-color: #90CAF9;
-    --secondary-color: #80CBC4;
-    --tertiary-color: #9FA8DA;
-    --background-color: #121212;
-    --text-color: #EEEEEE;
-    --card-bg-color: #1E1E1E;
-    --card-border-color: #333333;
-    --success-color: #81C784;
-    --warning-color: #FFB74D;
-    --error-color: #E57373;
-    --info-color: #64B5F6;
-    --light-gray: #242424;
-    --medium-gray: #757575;
-    --dark-gray: #9E9E9E;
+    --primary-color: #3b82f6;
+    --primary-light: #93c5fd;
+    --primary-dark: #1d4ed8;
+    --secondary-color: #0d9488;
+    --secondary-light: #2dd4bf;
+    --accent-color: #8b5cf6;
+    --accent-light: #c4b5fd;
+    --background-color: #0f172a;
+    --card-bg-color: #1e293b;
+    --card-border-color: #334155;
+    --text-color: #f1f5f9;
+    --text-secondary: #cbd5e1;
+    --text-tertiary: #94a3b8;
+    --success-color: #22c55e;
+    --warning-color: #f59e0b;
+    --error-color: #ef4444;
+    --info-color: #0ea5e9;
+    --light-gray: #334155;
+    --medium-gray: #64748b;
+    --dark-gray: #e2e8f0;
+    --stock-up-color: #10b981;
+    --stock-down-color: #ef4444;
 }
 
 body {
-    font-family: var(--font-sans);
+    font-family: var(--font-primary);
     color: var(--text-color);
     background-color: var(--background-color);
+    line-height: 1.6;
+    transition: background-color var(--transition-normal), color var(--transition-normal);
 }
 
 /* Main Container */
 .main .block-container {
-    padding: 2rem 1rem;
-    max-width: 1200px;
+    padding: 1.5rem 1rem; /* Reduced padding slightly for wide layout */
+    max-width: 1400px; /* Slightly wider max-width */
+    margin: 0 auto;
 }
 
 /* Header styling */
 h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-secondary);
+    color: var(--primary-color); /* Main headers primary */
+    font-weight: 600; /* Adjusted weight for modern feel */
+    letter-spacing: -0.01em;
+    margin-bottom: 0.75rem; /* Consistent margin */
+}
+h4, h5, h6 {
+    color: var(--text-color); /* Sub-headers use text color */
+}
+
+h1 { font-size: 2.2rem; line-height: 1.2; }
+h2 { font-size: 1.8rem; line-height: 1.25; }
+h3 { font-size: 1.5rem; line-height: 1.3; }
+h4 { font-size: 1.25rem; line-height: 1.35; }
+h5 { font-size: 1.1rem; line-height: 1.4; }
+
+
+p {
+    margin-bottom: 1rem;
+    color: var(--text-secondary);
+}
+
+a {
     color: var(--primary-color);
-    font-weight: 600;
+    text-decoration: none;
+    transition: color var(--transition-fast);
+}
+a:hover {
+    color: var(--primary-dark);
+    text-decoration: underline;
 }
 
 /* Streamlit elements styling */
-.stTextInput, .stTextArea, .stSelectbox, .stSlider {
-    border-radius: var(--radius-md);
+.stTextInput > div > div > input, 
+.stTextArea > div > textarea,
+.stSelectbox > div > div {
+    background-color: var(--card-bg-color) !important;
+    border: 1px solid var(--card-border-color) !important;
+    border-radius: var(--radius-md) !important;
+    box-shadow: var(--shadow-sm) !important;
+    color: var(--text-color) !important;
+    transition: all var(--transition-fast);
+}
+.stTextInput > div > div > input:focus, 
+.stTextArea > div > textarea:focus,
+.stSelectbox > div > div:focus-within { /* For selectbox wrapper */
+    border-color: var(--primary-color) !important;
+    box-shadow: 0 0 0 3px var(--primary-light) !important;
 }
 
+/* Button styling */
 .stButton > button {
+    font-weight: 500; /* Slightly lighter font weight */
+    border: 1px solid transparent; /* Prepare for secondary style */
+    padding: 0.5rem 1rem; /* Adjusted padding */
+    border-radius: var(--radius-md);
+    transition: all var(--transition-normal);
+    box-shadow: var(--shadow-sm);
+    letter-spacing: 0.2px; /* Subtle letter spacing */
+    /* text-transform: uppercase; /* Optional, can make it look too formal */
+    position: relative;
+    overflow: hidden;
+}
+
+/* Primary Button (default if type="primary") */
+.stButton > button[kind="primary"] { /* Streamlit uses 'kind' attribute */
     background-color: var(--primary-color);
     color: white;
-    font-weight: 600;
-    border: none;
-    padding: 0.6rem 1.2rem;
-    border-radius: var(--radius-md);
-    transition: all 0.3s ease;
-    box-shadow: var(--shadow-sm);
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
 }
-
-.stButton > button:hover {
-    background-color: var(--secondary-color);
+.stButton > button[kind="primary"]:hover {
+    background-color: var(--primary-dark);
     box-shadow: var(--shadow-md);
-    transform: translateY(-2px);
+    transform: translateY(-1px);
 }
-
-.stButton > button:active {
+.stButton > button[kind="primary"]:active {
     transform: translateY(0);
     box-shadow: var(--shadow-sm);
 }
 
-/* Sidebar styling */
-.sidebar .sidebar-content {
+/* Secondary Button */
+.stButton > button[kind="secondary"] {
     background-color: var(--card-bg-color);
+    color: var(--primary-color);
+    border: 1px solid var(--primary-color);
+}
+.stButton > button[kind="secondary"]:hover {
+    background-color: var(--primary-light); /* Light background on hover */
+    color: var(--primary-dark);
+    border-color: var(--primary-dark);
+}
+
+
+/* Sidebar styling */
+.stSidebar { /* Target the sidebar root */
+    background-color: var(--card-bg-color); /* Consistent with cards */
     border-right: 1px solid var(--card-border-color);
+    padding: 1rem; /* Add some padding */
+}
+.stSidebar .stExpander {
+    border: none;
+    box-shadow: none;
+    background-color: transparent;
+}
+.stSidebar .stExpander header {
+    padding: 0.5rem 0;
+    font-size: 0.95em;
 }
 
 /* Card styling */
 .card {
     background-color: var(--card-bg-color);
+    border-radius: var(--radius-lg);
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
     border: 1px solid var(--card-border-color);
-    border-radius: var(--radius-md);
-    padding: 18px;
-    margin-bottom: 20px;
-    box-shadow: var(--shadow-sm);
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
-    overflow: hidden;
+    box-shadow: var(--shadow-md);
+    transition: transform var(--transition-normal), box-shadow var(--transition-normal);
+    position: relative;
+    overflow: hidden; /* Ensures ::before is clipped */
+}
+
+.card::before { /* Accent border on the left */
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 5px; /* Slightly thicker accent */
+    height: 100%;
+    background-color: var(--primary-color); /* Default accent */
+    opacity: 0.9;
+    transition: background-color var(--transition-normal);
 }
 
 .card:hover {
-    transform: translateY(-3px);
-    box-shadow: var(--shadow-md);
+    transform: translateY(-3px); /* Subtle lift */
+    box-shadow: var(--shadow-lg);
 }
+
+.card-success::before { background-color: var(--success-color); }
+.card-warning::before { background-color: var(--warning-color); }
+.card-error::before { background-color: var(--error-color); }
+.card-info::before { background-color: var(--info-color); }
 
 .card-header {
     display: flex;
     align-items: center;
-    margin-bottom: 15px;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.75rem;
     border-bottom: 1px solid var(--card-border-color);
-    padding-bottom: 10px;
 }
 
 .card-icon {
-    font-size: 1.2rem;
-    margin-right: 10px;
-    color: var(--primary-color);
+    margin-right: 0.75rem;
+    color: var(--primary-color); /* Icon color matches primary */
+    font-size: 1.2rem; /* Slightly smaller icon */
 }
+/* Match icon color to card type */
+.card-success .card-icon { color: var(--success-color); }
+.card-warning .card-icon { color: var(--warning-color); }
+.card-error .card-icon { color: var(--error-color); }
+.card-info .card-icon { color: var(--info-color); }
+
 
 .card-title {
-    font-size: 1.2rem;
     font-weight: 600;
-    color: var(--primary-color);
-    flex: 1;
-}
-
-.card-timestamp {
-    font-size: 0.8rem;
-    color: var(--dark-gray);
-    font-weight: 400;
-}
-
-.card-content {
-    font-size: 1rem;
-    line-height: 1.6;
+    font-size: 1.1rem; /* Slightly smaller title */
     color: var(--text-color);
 }
 
-/* Card types */
-.card-success {
-    border-left: 4px solid var(--success-color);
+.card-timestamp {
+    margin-left: auto;
+    font-size: 0.8rem;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
 }
 
-.card-warning {
-    border-left: 4px solid var(--warning-color);
+.card-content {
+    font-size: 0.95rem; /* Slightly smaller content text */
+    line-height: 1.65;
+    color: var(--text-secondary); /* Use secondary text color */
 }
 
-.card-error {
-    border-left: 4px solid var(--error-color);
-}
 
-.card-info {
-    border-left: 4px solid var(--info-color);
-}
-
-/* Audio container */
-.audio-container {
+/* Audio player container */
+.audio-player-container { /* New class for audio player */
     background-color: var(--light-gray);
     border-radius: var(--radius-md);
-    padding: 12px;
-    margin: 15px 0;
+    padding: 0.75rem;
+    margin: 1rem 0;
     box-shadow: var(--shadow-sm);
 }
-
-/* Audio player styling */
 audio {
     width: 100%;
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-sm); /* Smaller radius for audio element */
     height: 40px;
 }
+
 
 /* Progress step styling */
 .step-complete {
     display: flex;
     align-items: center;
-    background-color: var(--light-gray);
-    padding: 10px 15px;
+    background-color: transparent; /* No background, just text */
+    padding: 0.3rem 0; /* Reduced padding */
     border-radius: var(--radius-md);
-    margin: 8px 0;
+    margin: 0.3rem 0;
     font-weight: 500;
+    font-size: 0.9em;
     color: var(--success-color);
 }
-
 .step-complete i {
-    margin-right: 10px;
-    font-size: 1.1rem;
+    margin-right: 0.5rem;
+    font-size: 1rem;
 }
 
 /* Stock cards */
 .stock-card {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
     background-color: var(--card-bg-color);
-    border: 1px solid var(--card-border-color);
-    border-radius: var(--radius-md);
-    padding: 12px 16px;
-    margin-bottom: 10px;
-    box-shadow: var(--shadow-sm);
-    transition: transform 0.2s ease;
-}
-
-.stock-card:hover {
-    transform: translateX(3px);
+    border-radius: var(--radius-lg);
+    padding: 1rem; /* Adjusted padding */
     box-shadow: var(--shadow-md);
+    border: 1px solid var(--card-border-color);
+    text-align: center;
+    margin-bottom: 1rem;
+    transition: transform var(--transition-normal), box-shadow var(--transition-normal);
+    position: relative;
+    overflow: hidden;
+    height: 100%; /* For consistent height in columns */
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between; /* Space out content */
 }
+.stock-card::after { /* Bottom accent border */
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 4px;
+    background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
+    opacity: 0.8;
+    transition: height var(--transition-normal);
+}
+.stock-card:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-lg);
+}
+.stock-card:hover::after { height: 6px; }
 
 .stock-ticker {
-    font-weight: 700;
+    font-weight: 600; /* Slightly less bold */
     font-size: 1.1rem;
+    margin-bottom: 0.5rem;
     color: var(--primary-color);
+    font-family: var(--font-secondary);
 }
 
 .stock-price {
-    font-weight: 600;
-    font-size: 1.1rem;
+    font-size: 1.3rem; /* Adjusted size */
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    color: var(--text-color);
 }
 
 .stock-change {
-    font-weight: 500;
-    padding: 4px 8px;
-    border-radius: var(--radius-sm);
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 0.3rem 0.6rem; /* Adjusted padding */
+    border-radius: var(--radius-md);
+    display: inline-block;
+}
+.stock-up { color: var(--stock-up-color); background-color: rgba(16, 185, 129, 0.1); border: 1px solid var(--stock-up-color);} /* Light background */
+.stock-down { color: var(--stock-down-color); background-color: rgba(239, 68, 68, 0.1); border: 1px solid var(--stock-down-color); }
+
+
+/* App Header and Branding */
+.app-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem; /* Reduced gap */
+    padding: 1rem 0; /* Adjusted padding */
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid var(--card-border-color);
+    position: relative;
+}
+.app-header::after { /* Gradient bottom border */
+    content: '';
+    position: absolute;
+    bottom: -1px; /* Align with border */
+    left: 0;
+    width: 100%;
+    height: 2px; /* Thinner gradient line */
+    background: linear-gradient(90deg, var(--primary-color), var(--secondary-color), var(--accent-color));
 }
 
-.stock-up {
-    color: var(--stock-up-color);
-    background-color: rgba(76, 175, 80, 0.1);
+.app-logo {
+    width: 70px; /* Adjusted logo size via CSS */
+    height: auto;
+    transition: transform var(--transition-normal);
+}
+.app-logo:hover { transform: scale(1.08) rotate(-3deg); } /* Fun hover effect */
+
+.app-title {
+    font-family: var(--font-secondary);
+    font-size: 2.2rem; /* Adjusted size */
+    font-weight: 700;
+    color: var(--primary-color);
+    margin: 0;
+    line-height: 1; /* Tight line height for title */
+    background: linear-gradient(45deg, var(--primary-dark), var(--secondary-color));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
 }
 
-.stock-down {
-    color: var(--stock-down-color);
-    background-color: rgba(244, 67, 54, 0.1);
+.subtitle {
+    font-size: 1rem; /* Adjusted size */
+    margin-top: 0.25rem;
+    margin-bottom: 0;
+    color: var(--text-secondary);
+    font-weight: 400; /* Lighter weight */
+    line-height: 1.3;
 }
+
+.theme-toggle-button { /* Styling for the JS theme toggle button */
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 0.5rem;
+    border-radius: var(--radius-md);
+    transition: color var(--transition-fast), background-color var(--transition-fast);
+}
+.theme-toggle-button:hover {
+    color: var(--primary-color);
+    background-color: var(--light-gray);
+}
+
 
 /* Streamlit tabs styling */
 .stTabs [data-baseweb="tab-list"] {
-    gap: 8px;
+    gap: 0.5rem; /* Space between tabs */
+    background-color: transparent; /* No main background for tab list */
+    border-bottom: 2px solid var(--card-border-color); /* Underline for the whole tab bar */
+    padding: 0;
+    margin-bottom: 1.5rem;
 }
 
 .stTabs [data-baseweb="tab"] {
-    height: 50px;
-    white-space: pre-wrap;
-    background-color: var(--light-gray);
-    border-radius: var(--radius-md) var(--radius-md) 0 0;
-    gap: 1em;
-    padding: 10px 20px;
+    height: auto; /* Auto height */
+    padding: 0.75rem 1.25rem; /* Tab padding */
+    border-radius: var(--radius-md) var(--radius-md) 0 0; /* Rounded top corners */
+    background-color: transparent;
+    color: var(--text-tertiary);
+    font-weight: 500;
+    transition: all var(--transition-fast);
+    border: none; /* Remove individual tab borders initially */
+    border-bottom: 2px solid transparent; /* Placeholder for active indicator */
+    position: relative;
+    margin-bottom: -2px; /* Overlap with main border */
+}
+
+.stTabs [data-baseweb="tab"]:hover {
+    color: var(--primary-color);
+    background-color: var(--light-gray); /* Subtle hover background */
 }
 
 .stTabs [aria-selected="true"] {
-    background-color: var(--primary-color) !important;
-    color: white !important;
+    background-color: var(--card-bg-color); /* Match card background */
+    color: var(--primary-color);
+    font-weight: 600;
+    border-bottom: 2px solid var(--primary-color); /* Active tab underline */
+    box-shadow: none; /* No shadow on active tab, rely on border */
 }
+/* Remove Streamlit's default ::after element for selected tab */
+.stTabs [aria-selected="true"]::after { 
+    display: none;
+}
+
+/* Tab content area */
+.stTabs [data-baseweb="tab-panel"] {
+    padding: 1.5rem 0.25rem; /* Padding for tab content */
+}
+
+/* Provider selector specific styling */
+.selected-provider {
+    padding: 0.5rem;
+    background-color: var(--primary-light);
+    color: var(--primary-dark);
+    border-radius: var(--radius-md);
+    text-align: center;
+    font-weight: 500; /* Already strong via markdown */
+}
+/* For the st.button variant in render_provider_selector */
+div[data-testid="stHorizontalBlock"] .stButton button {
+    background-color: var(--card-bg-color);
+    color: var(--text-secondary);
+    border: 1px solid var(--card-border-color);
+    font-weight: 400;
+}
+div[data-testid="stHorizontalBlock"] .stButton button:hover {
+    background-color: var(--light-gray);
+    color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
 
 /* Responsive adjustments */
 @media (max-width: 768px) {
-    .card {
-        padding: 14px;
-    }
+    .main .block-container { padding: 1rem 0.75rem; }
+    .app-header { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+    .app-logo { width: 50px; }
+    .app-title { font-size: 1.8rem; }
+    .subtitle { font-size: 0.9rem; }
+    .theme-toggle-button { position: absolute; top: 1rem; right: 1rem;}
+
+    .card { padding: 1rem; }
+    .card-title { font-size: 1rem; }
+    .card-content { font-size: 0.9rem; }
     
-    .card-title {
-        font-size: 1.1rem;
-    }
+    .stock-card { padding: 0.75rem; }
+    .stock-ticker { font-size: 1rem; }
+    .stock-price { font-size: 1.2rem; }
+
+    .stTabs [data-baseweb="tab"] { padding: 0.5rem 0.75rem; font-size: 0.9em; }
     
-    .card-content {
-        font-size: 0.9rem;
-    }
-    
-    .stock-card {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 5px;
-    }
+    /* Stack columns in various places if needed */
+    /* Example: .stMultiSelect, .stDateInput might need width adjustments */
+}
+
+/* ===== SIDEBAR TEXT LEGIBILITY ===== */
+.stSidebar h1, .stSidebar h2, .stSidebar h3, .stSidebar h4, .stSidebar h5, .stSidebar h6 {
+    color: var(--text-color); /* Ensure sidebar headers use the theme's main text color */
+}
+
+.stSidebar .stMarkdown p, /* Target markdown paragraphs in sidebar */
+.stSidebar .stText, /* Target st.text in sidebar if used */
+.stSidebar label { /* Target labels for widgets */
+    color: var(--text-secondary); /* Use secondary text color for better readability */
+}
+
+[data-theme="dark"] .stSidebar label,
+[data-theme="dark"] .stSidebar .stMarkdown p {
+    color: var(--text-secondary); /* Explicitly set for dark theme, as it's currently too light */
+}
+
+/* For the model selector sub-headers within tabs in sidebar */
+.stSidebar .stTabs [data-baseweb="tab-panel"] h5,
+.stSidebar .stTabs [data-baseweb="tab-panel"] h6 {
+    color: var(--text-color); /* Make these more prominent */
+    margin-top: 1rem;
+    margin-bottom: 0.5rem;
+}
+
+/* Improve visibility of slider value text */
+.stSlider span[data-testid="stText"] { /* Target the text displaying slider value */
+    color: var(--text-color) !important; /* Ensure it's visible */
+    font-size: 0.9em;
+}
+
+/* Make selectbox text more visible */
+.stSelectbox > div > div > div {
+     color: var(--text-color) !important;
+}
+[data-theme="dark"] .stSelectbox > div > div > div {
+     color: var(--text-color) !important; /* Ensure this applies in dark mode too */
 }

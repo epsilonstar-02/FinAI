@@ -1,34 +1,64 @@
 import os
 import uuid
-import base64
-import json
+import numpy as np
 import streamlit as st
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import time
 import random
+from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode
+import av
 
-# Import standard components
 from components import render_card, render_audio_player, show_progress_step, render_stock_info, render_market_chart, render_tabs
-
-# Import advanced components
 from advanced_components import (
-    render_provider_selector, render_correlation_matrix, render_risk_metrics_radar,
-    render_portfolio_exposures, render_price_changes, render_volatility_comparison,
-    render_audio_recorder, render_model_selector, render_analysis_dashboard
+    render_provider_selector,
+    render_model_selector, render_analysis_dashboard
 )
-
-# Import utilities
 from utils import call_orchestrator, call_stt, call_tts, generate_pdf
 
-# Load environment variables
+SAMPLE_RATE = 16000
+CHANNELS = 1
+
+if "audio_buffer" not in st.session_state:
+    st.session_state.audio_buffer = []
+if "audio_bytes_to_process" not in st.session_state:
+    st.session_state.audio_bytes_to_process = None
+if "webrtc_is_playing" not in st.session_state:
+    st.session_state.webrtc_is_playing = False
+
+class AudioRecorderProcessor(AudioProcessorBase):
+    def __init__(self) -> None:
+        super().__init__()
+        self._frames_buffer = []
+
+    def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
+        self._frames_buffer.append(frame.to_ndarray())
+        return frame
+
+    def get_recorded_data_and_clear(self) -> bytes | None:
+        if not self._frames_buffer:
+            return None
+        
+        all_samples = np.concatenate(self._frames_buffer, axis=1)
+
+        if all_samples.ndim > 1 and all_samples.shape[0] > 1:
+            all_samples = all_samples[0, :]
+        all_samples = all_samples.flatten()
+
+        if np.issubdtype(all_samples.dtype, np.floating):
+            all_samples = (all_samples * 32767).astype(np.int16)
+        elif all_samples.dtype != np.int16:
+            all_samples = all_samples.astype(np.int16)
+            
+        audio_bytes = all_samples.tobytes()
+        self._frames_buffer.clear()
+        return audio_bytes
+
 load_dotenv()
 ORCH_URL = os.getenv("ORCH_URL", "http://orchestrator:8004")
 VOICE_URL = os.getenv("VOICE_URL", "http://voice_agent:8006")
 
-# Page configuration
 st.set_page_config(
     page_title="FinAI - Financial Intelligence Assistant",
     page_icon="💹",
@@ -36,518 +66,486 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
-with open("streamlit_app/styles.css") as f:
-    st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+try:
+    with open("streamlit_app/styles.css") as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+except FileNotFoundError:
+    st.warning("styles.css not found. The app may not be styled correctly.")
 
 
 def initialize_session_state():
-    """Initialize session state variables"""
-    if "history" not in st.session_state:
-        st.session_state.history = []
-    if "mode" not in st.session_state:
-        st.session_state.mode = "text"
-    if "theme" not in st.session_state:
-        st.session_state.theme = "light"
-    if "audio_bytes" not in st.session_state:
-        st.session_state.audio_bytes = None
-    if "session_id" not in st.session_state:
-        st.session_state.session_id = str(uuid.uuid4())
-    if "tickers" not in st.session_state:
-        st.session_state.tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "META"]
-    if "last_response" not in st.session_state:
-        st.session_state.last_response = None
+    defaults = {
+        "history": [],
+        "mode": "text",
+        "theme": "light",
+        "audio_bytes": None,
+        "session_id": str(uuid.uuid4()),
+        "tickers": ["AAPL", "MSFT", "GOOGL"],
+        "last_response": None,
+        "last_analysis": None,
+        "user_input_text": "",
+        "transcript_text": "",
+        "model_selections": {} 
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
 
-def toggle_theme():
-    """Toggle between light and dark theme"""
-    if st.session_state.theme == "light":
-        st.session_state.theme = "dark"
-    else:
-        st.session_state.theme = "light"
-    
-    # Apply theme to body
-    st.markdown(f"<script>document.body.setAttribute('data-theme', '{st.session_state.theme}');</script>", unsafe_allow_html=True)
+def toggle_theme_js():
+    theme_js = """
+        <script>
+            function toggleTheme() {
+                const currentTheme = document.body.getAttribute('data-theme');
+                const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+                document.body.setAttribute('data-theme', newTheme);
+            }
+            document.body.setAttribute('data-theme', '%s');
+        </script>
+    """ % st.session_state.get("theme", "light")
+    st.markdown(theme_js, unsafe_allow_html=True)
 
+def python_toggle_theme():
+    st.session_state.theme = "dark" if st.session_state.theme == "light" else "light"
+    st.rerun()
 
 def display_dashboard():
-    """Display a simple financial dashboard with stock data"""
-    # Mock data for demonstration purposes
     st.subheader("Market Overview")
     
-    # Stock cards in a row
     cols = st.columns(len(st.session_state.tickers[:5]))
     
-    # Sample stock data (in a real app, this would come from the API agent)
     for i, ticker in enumerate(st.session_state.tickers[:5]):
         with cols[i]:
-            # Mock price and change
-            import random
             price = random.uniform(100, 500)
             change = random.uniform(-5, 5)
             render_stock_info(ticker, price, change)
     
-    # Market chart
-    st.subheader("Market Trends")
-    
-    # Generate mock data for chart
-    dates = [(datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30, 0, -1)]
-    
-    # Sample data for chart (in a real app, this would come from the API agent)
+    st.subheader("Market Trends (Sample Data)")
+    dates = pd.to_datetime([(datetime.now() - timedelta(days=i)) for i in range(29, -1, -1)])
     chart_data = pd.DataFrame({
         'date': dates,
-        'price': [round(100 + i * 0.5 + random.uniform(-5, 5), 2) for i in range(30)]
+        'price': [round(150 + i * 0.8 + random.uniform(-10, 10), 2) for i in range(30)]
     })
-    
     render_market_chart(chart_data)
 
 
 def main():
-    """Main application function"""
     initialize_session_state()
+    toggle_theme_js() 
 
-    # Apply theme
-    st.markdown(f"<script>document.body.setAttribute('data-theme', '{st.session_state.theme}');</script>", unsafe_allow_html=True)
-
-    # Header with branded layout
-    header_col1, header_col2, header_col3 = st.columns([1, 4, 1])
-    with header_col1:
-        st.image("streamlit_app/assets/logo.png", width=80)
-    with header_col2:
-        st.title("FinAI - Financial Intelligence Assistant")
-        st.markdown("<p class='subtitle'>Advanced multi-agent financial briefing platform</p>", unsafe_allow_html=True)
-    with header_col3:
-        # Theme toggle button in the header
-        theme_icon = "moon" if st.session_state.theme == "light" else "sun"
-        st.button(f"🔄 Theme", on_click=toggle_theme)
-
-    # Dashboard view with tabs for different views
-    dashboard_tabs = st.tabs(["Market Overview", "Portfolio Analysis", "Financial Assistant"])
+    st.markdown(f'''
+    <div class="app-header">
+        <img src="streamlit_app/assets/logo.png" class="app-logo" alt="FinAI Logo" /> 
+        <div>
+            <h1 class="app-title">FinAI</h1>
+            <p class="subtitle">Advanced Multi-Agent Financial Intelligence</p>
+        </div>
+        <div style="margin-left: auto; display: flex; align-items: center;">
+            <button onclick="toggleTheme()" title="Toggle Theme" class="theme-toggle-button">
+                <i class="fas fa-adjust"></i>
+            </button>
+        </div>
+    </div>
+    ''', unsafe_allow_html=True)
     
-    # Tab 1: Market Overview
+    tab_titles = ["📊 Market Overview", "📈 Portfolio Analysis", "🤖 Financial Assistant"]
+    dashboard_tabs = st.tabs(tab_titles)
+    
     with dashboard_tabs[0]:
         display_dashboard()
     
-    # Tab 2: Portfolio Analysis (if we have analysis data)
     with dashboard_tabs[1]:
-        if "last_analysis" in st.session_state and st.session_state.last_analysis:
+        if st.session_state.last_analysis:
             render_analysis_dashboard(st.session_state.last_analysis)
         else:
-            st.info("No portfolio analysis data available yet. Use the Financial Assistant to analyze a portfolio.")
-            
-            # Sample portfolio for demonstration
-            if st.button("Generate Sample Portfolio Analysis"):
-                with st.spinner("Generating sample portfolio analysis..."):
-                    # Generate mock data
-                    symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "META"]
-                    
-                    # Current prices
-                    prices = {sym: random.uniform(100, 500) for sym in symbols}
-                    
-                    # Generate historical data for the past 30 days
+            st.info("No portfolio analysis data. Use the 'Financial Assistant' or generate a sample below.")
+            if st.button("🔬 Generate Sample Portfolio Analysis"):
+                with st.spinner("Generating sample analysis... This might take a moment."):
+                    symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"]
+                    prices = {sym: random.uniform(100, 1000) for sym in symbols}
                     historical = {}
                     for sym in symbols:
                         base_price = prices[sym]
                         hist_data = []
-                        for i in range(30):
+                        for i in range(60, 0, -1):
                             date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-                            # Generate price with some randomness around a trend
-                            close = base_price * (1 + 0.001 * i + random.uniform(-0.02, 0.02))
-                            hist_data.append({"date": date, "close": close})
+                            close = base_price * (1 - 0.0005 * i + random.uniform(-0.015, 0.015))
+                            hist_data.append({"date": date, "close": round(max(1, close),2) })
                         historical[sym] = hist_data
                     
-                    # Call analysis agent
                     try:
+                        analysis_settings = st.session_state.model_selections.get("analysis", {})
                         params = {
-                            "prices": prices,
-                            "historical": historical,
-                            "provider": "advanced",
-                            "include_correlations": True,
-                            "include_risk_metrics": True
+                            "prices": prices, "historical": historical,
+                            "provider": analysis_settings.get("provider", "advanced"),
+                            "include_correlations": analysis_settings.get("include_correlations", True),
+                            "include_risk_metrics": analysis_settings.get("include_risk_metrics", True)
                         }
-                        
-                        response = call_orchestrator(
-                            "Analyze this portfolio", 
-                            "text", 
-                            params
-                        )
+                        response = call_orchestrator("Analyze this sample portfolio", {"analysis_params": params}) 
                         
                         if response and "steps" in response:
+                            analysis_step_found = False
                             for step in response["steps"]:
-                                if step["tool"] == "analysis_agent":
+                                if step.get("tool") == "analysis_agent" and "response" in step:
                                     st.session_state.last_analysis = step["response"]
-                                    st.experimental_rerun()
+                                    analysis_step_found = True
+                                    break
+                            if analysis_step_found:
+                                st.success("Sample analysis generated!")
+                                st.rerun()
+                            else:
+                                st.warning("Analysis agent did not return data in the expected format.")
+                        else:
+                            st.error("Failed to generate sample analysis or orchestrator returned an error.")
                     except Exception as e:
-                        st.error(f"Failed to generate sample analysis: {str(e)}")
-    
-    # Tab 3: Financial Assistant
+                        st.error(f"Error during sample analysis generation: {str(e)}")
+
     with dashboard_tabs[2]:
         st.header("Financial Intelligence Assistant")
         
-        # Mode selector: Text or Voice
-        mode_col1, mode_col2 = st.columns(2)
-        with mode_col1:
-            text_mode = st.button(
-                "💬 Text Mode", 
-                help="Interact with FinAI using text",
-                use_container_width=True,
-                key="text_mode_button"
-            )
-            if text_mode:
+        mode_cols = st.columns(2)
+        with mode_cols[0]:
+            if st.button("💬 Text Mode", use_container_width=True, type="secondary" if st.session_state.mode != "text" else "primary"):
                 st.session_state.mode = "text"
-        
-        with mode_col2:
-            voice_mode = st.button(
-                "🎙️ Voice Mode", 
-                help="Interact with FinAI using voice",
-                use_container_width=True,
-                key="voice_mode_button"
-            )
-            if voice_mode:
+                st.rerun()
+        with mode_cols[1]:
+            if st.button("🎙️ Voice Mode", use_container_width=True, type="secondary" if st.session_state.mode != "voice" else "primary"):
                 st.session_state.mode = "voice"
+                st.rerun()
         
-        st.markdown(f"<div class='mode-indicator'>Current Mode: <b>{st.session_state.mode.upper()}</b></div>", unsafe_allow_html=True)
-        
-        # Main input area
-        if st.session_state.mode == "text":
-            user_input = st.text_area("Ask about market trends, specific stocks, or request a financial brief", height=100)
-            audio_bytes = None
-        else:  # Voice mode
-            user_input = st.text_area("Your transcribed input will appear here", height=50)
-            audio_bytes = render_audio_recorder()
-    
-    # Sidebar configuration with advanced settings
-    with st.sidebar:
-        st.header("Advanced Settings")
-        
-        # Get model selections
-        model_selections = render_model_selector()
-        
-        # Store selections in session state
-        st.session_state.model_selections = model_selections
-        
-        # Input mode selection with icons
-        st.subheader("💬 Input Mode")
-        mode_options = ["Text", "Voice"]
-        
-        # Use a different key for the radio button to avoid conflicts
-        selected_mode = st.radio(
-            "Select input mode", 
-            options=mode_options, 
-            index=0 if st.session_state.mode == "text" else 1, 
-            horizontal=True,
-            key="input_mode_selector",
-            label_visibility="collapsed"
-        )
-        
-        # Update the session state
-        st.session_state.mode = selected_mode.lower()
-        
-        # Query parameters
-        st.subheader("⚙️ Query Parameters")
-        with st.expander("Advanced Options", expanded=True):
-            # Tickers multi-select
-            selected_tickers = st.multiselect(
-                "Ticker Symbols",
-                options=["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "JPM", "V", "WMT"],
-                default=st.session_state.tickers[:3]
-            )
-            if selected_tickers:
-                st.session_state.tickers = selected_tickers
-                
-            # Other parameters
-            news_limit = st.slider("News Article Limit", 1, 10, 3)
-            retrieve_k = st.slider("Retrieval Top-k", 1, 10, 5)
-            include_analysis = st.toggle("Include Market Analysis", value=True)
-        
-        # Voice settings
-        if st.session_state.mode == "voice":
-            st.subheader("🎙️ Voice Settings")
-            with st.expander("Voice Options"):
-                voice_type = st.selectbox(
-                    "Voice Type",
-                    options=["en-US-Neural2-F", "en-US-Neural2-M", "en-GB-Neural2-F", "en-GB-Neural2-M"],
-                    index=0
-                )
-                speaking_rate = st.slider("Speaking Rate", 0.5, 1.5, 1.0, 0.1)
-                pitch = st.slider("Pitch", -5.0, 5.0, 0.0, 0.5)
-                
-        # About section
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("About FinAI")
-        st.sidebar.info(
-            "FinAI is an advanced multi-agent financial intelligence system "
-            "designed to provide real-time market insights through natural language interaction."
-        )
+        st.caption(f"Current Mode: **{st.session_state.mode.upper()}**")
+        st.markdown("---")
 
-    # Main interaction area
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        # Input area based on mode
+        processed_user_query = ""
+
         if st.session_state.mode == "text":
-            user_input = st.text_area(
-                "Enter your financial query:", 
+            st.session_state.user_input_text = st.text_area(
+                "Enter your financial query:",
+                value=st.session_state.user_input_text,
                 height=100,
                 placeholder="E.g., What's the current market outlook for tech stocks?"
             )
-            
-            # Quick question suggestions
-            st.markdown("<p><strong>Try asking:</strong></p>", unsafe_allow_html=True)
+            processed_user_query = st.session_state.user_input_text
+
+            st.markdown("<p style='font-size: 0.9em; margin-bottom: 0.5em;'><strong>💡 Try asking:</strong></p>", unsafe_allow_html=True)
             suggestion_cols = st.columns(3)
             suggestions = [
-                "What's the current price of AAPL?",
-                "How has the market performed this week?",
-                "Generate a market brief on tech stocks"
+                "Price of AAPL?",
+                "Market performance this week?",
+                "Tech stocks market brief"
             ]
-            
             for i, suggestion in enumerate(suggestions):
                 with suggestion_cols[i]:
-                    if st.button(f"{suggestion}", key=f"suggestion_{i}"):
-                        user_input = suggestion
+                    if st.button(suggestion, key=f"suggestion_{i}", use_container_width=True):
+                        st.session_state.user_input_text = suggestion
+                        processed_user_query = suggestion
                         st.rerun()
-                        
-        else:  # voice mode
-            from streamlit_audio_recorder import audio_recorder
-            
-            st.markdown("### Record Your Query")
-            audio_bytes = audio_recorder("Click to record", "Click to stop recording")
-            
-            user_input = ""
-            if audio_bytes is not None and audio_bytes != st.session_state.audio_bytes and len(audio_bytes) > 0:
-                st.session_state.audio_bytes = audio_bytes
-                with st.spinner("Transcribing audio..."):
-                    transcript = call_stt(audio_bytes)
-                    user_input = transcript.get("text", "")
-                    if user_input:
-                        st.success(f"Transcript: {user_input}")
-                    else:
-                        st.error("Failed to transcribe audio. Please try again.")
-    
-    with col2:
-        # Session info
-        st.markdown("### Session Info")
-        st.markdown(f"**Session ID:** {st.session_state.session_id[:8]}...")
-        st.markdown(f"**Mode:** {st.session_state.mode.capitalize()}")
-        st.markdown(f"**Queries:** {len(st.session_state.history)}")
         
-        # Action buttons
-        st.markdown("### Actions")
-        if st.button("Clear History", key="clear_history"):
+        else: 
+            st.markdown("##### Record Your Query")
+            st.caption("Click 'Start' to record, then 'Stop'. Audio will be processed automatically.")
+
+            if "audio_processor_instance" not in st.session_state:
+                st.session_state.audio_processor_instance = None
+            
+            def audio_processor_factory():
+                processor = AudioRecorderProcessor()
+                st.session_state.audio_processor_instance = processor
+                return processor
+
+            col_rec, col_stop = st.columns(2)
+            if col_rec.button("🎙️ Start Recording", key="start_rec_btn", use_container_width=True, disabled=st.session_state.webrtc_is_playing):
+                st.session_state.webrtc_is_playing = True
+                st.rerun()
+
+            if col_stop.button("⏹️ Stop Recording", key="stop_rec_btn", use_container_width=True, disabled=not st.session_state.webrtc_is_playing):
+                st.session_state.webrtc_is_playing = False
+                st.rerun()
+
+            if st.session_state.webrtc_is_playing:
+                webrtc_ctx = webrtc_streamer(
+                    key="audio_stream_recorder",
+                    mode=WebRtcMode.SENDRECV,
+                    audio_processor_factory=audio_processor_factory,
+                    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+                    media_stream_constraints={"video": False, "audio": True},
+                    desired_playing_state=st.session_state.webrtc_is_playing,
+                )
+            
+            if not st.session_state.webrtc_is_playing and st.session_state.get("audio_processor_instance"):
+                audio_bytes_recorded = st.session_state.audio_processor_instance.get_recorded_data_and_clear()
+                if audio_bytes_recorded:
+                    st.session_state.audio_bytes_to_process = audio_bytes_recorded
+                    st.session_state.audio_processor_instance = None
+                    st.session_state.audio_bytes = audio_bytes_recorded
+                    st.session_state.last_audio_bytes_processed = audio_bytes_recorded
+                    st.rerun()
+
+            if st.session_state.audio_bytes_to_process:
+                with st.spinner("Transcribing audio..."):
+                    st.audio(st.session_state.audio_bytes_to_process, format="audio/wav", sample_rate=SAMPLE_RATE)
+                    
+                    transcript_response = call_stt(st.session_state.audio_bytes_to_process)
+                    st.session_state.transcript_text = transcript_response.get("text", "")
+                    st.session_state.audio_bytes_to_process = None
+                    
+                    if st.session_state.transcript_text:
+                        st.success("✅ Transcription complete!")
+                        st.info(f"🗣️ Transcript: \"{st.session_state.transcript_text}\"")
+                        processed_user_query = st.session_state.transcript_text
+                    else:
+                        st.error("Could not transcribe audio. Please try again.")
+            
+            if st.session_state.transcript_text:
+                st.info(f"🗣️ Last Transcript: \"{st.session_state.transcript_text}\" (Ready to send)")
+                processed_user_query = st.session_state.transcript_text
+
+        if st.button("🚀 Generate Financial Brief", type="primary", use_container_width=True, disabled=not processed_user_query.strip()):
+            if not processed_user_query.strip():
+                st.warning("Please enter a query or record your voice.")
+            else:
+                st.session_state.query_to_process = processed_user_query
+                st.session_state.trigger_processing = True
+                st.rerun()
+
+    # --- Updated Sidebar ---
+    with st.sidebar:
+        st.image("streamlit_app/assets/logo.png", width=60)
+        st.header("Settings & Info")
+        # Removed first st.markdown("---") for cleaner look after header
+
+        with st.expander("🤖 Model Configuration", expanded=False): # Set to False for cleaner initial view
+            # Pass show_subheader=False to avoid duplicate subheader from the function
+            st.session_state.model_selections = render_model_selector(show_subheader=False) 
+        
+        st.markdown("---")
+
+        st.subheader("Input Mode")
+        mode_options = ["Text", "Voice"]
+        selected_mode_sidebar = st.radio(
+            "Select input mode", options=mode_options, # Label is effectively covered by subheader
+            index=mode_options.index(st.session_state.mode.capitalize()),
+            horizontal=True, key="sidebar_input_mode_selector", label_visibility="collapsed"
+        )
+        st.markdown("---")
+
+        st.subheader("Query Parameters")
+        with st.expander("Advanced Query Options", expanded=False): # More descriptive expander label
+            all_ticker_options = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "JPM", "V", "WMT", "BTC-USD", "ETH-USD"]
+            # Ensure news_limit and retrieve_k are initialized in session_state if they are to be used directly from there
+            # or passed around. For now, they are function-local in the processing block.
+            # For robust access in orch_params, ensure they are defined before that block.
+            # One way is to assign them to st.session_state here if not already.
+            # However, the original code defines them as local vars in the processing block based on sliders.
+            # This part of the code (sliders directly creating vars) is fine.
+            
+            st.session_state.tickers = st.multiselect(
+                "Ticker Symbols for Context",
+                options=all_ticker_options,
+                default=st.session_state.tickers
+            )
+            # These sliders will create 'news_limit' and 'retrieve_k' in the scope of the main() function when this part of sidebar is rendered.
+            # Ensure these names don't clash or are handled correctly in the processing block.
+            # The current code re-reads them from session_state.model_selections or uses the slider values from the main scope,
+            # which can be confusing. Best to ensure these values are stored in session_state if used across reruns or callbacks.
+            # For sliders, the key directly updates st.session_state.
+            # So, news_limit can be st.session_state.news_limit_slider.
+
+            _news_limit = st.slider("News Article Limit", 1, 10, st.session_state.get("news_limit_slider", 3), key="news_limit_slider")
+            _retrieve_k = st.slider("Retrieval Top-k (Documents)", 1, 10, st.session_state.get("retrieve_k_slider", 5), key="retrieve_k_slider")
+
+        st.markdown("---")
+        
+        st.subheader("Session")
+        st.caption(f"ID: {st.session_state.session_id[:8]}...")
+        st.caption(f"Queries: {len(st.session_state.history)}")
+        if st.button("Clear Chat History", key="clear_history_sidebar", use_container_width=True):
             st.session_state.history = []
             st.session_state.last_response = None
-            st.success("History cleared successfully!")
+            st.session_state.user_input_text = ""
+            st.session_state.transcript_text = ""
+            st.success("History cleared!")
+            time.sleep(1)
             st.rerun()
+        
+        st.markdown("---")
 
-    # Process button - separate from columns
-    process_btn = st.button("🚀 Generate Financial Brief", key="process_btn", type="primary")
-    
-    # Process the query when button is clicked
-    if process_btn and user_input:
-        progress_container = st.empty()
-        progress_bar = st.progress(0)
+        st.subheader("About FinAI")
+        st.info(
+            "FinAI is an advanced multi-agent financial intelligence system providing real-time market insights."
+        )
+        st.caption(f"Version 1.0.0 | Theme: {st.session_state.theme.capitalize()}")
         
-        # Create request parameters
-        params = {
-            "mode": st.session_state.mode,
-            "session_id": st.session_state.session_id
-        }
-        
-        # Add relevant model selections from the sidebar
-        if "model_selections" in st.session_state:
-            # Add LLM parameters
-            llm_settings = st.session_state.model_selections.get("llm", {})
-            params["model"] = llm_settings.get("model")
-            params["temperature"] = llm_settings.get("temperature")
-            params["max_tokens"] = llm_settings.get("max_tokens")
+        # Removed redundant theme toggle button from sidebar
+        # The header theme toggle is preferred.
+
+    # Processing logic (triggered by the flag set above)
+    # Initialize news_limit and retrieve_k here to ensure they have values
+    # before being used in orch_params, especially if the sidebar part isn't rendered first.
+    news_limit = st.session_state.get("news_limit_slider", 3)
+    retrieve_k = st.session_state.get("retrieve_k_slider", 5)
+
+    if st.session_state.get("trigger_processing", False):
+        st.session_state.trigger_processing = False 
+        query_to_process = st.session_state.get("query_to_process", "")
+
+        if query_to_process:
+            progress_area = st.container() 
+            with progress_area:
+                st.markdown("---")
+                st.info("🚀 Processing your request...") 
+                progress_bar = st.progress(0)
+                simulated_steps = ["Initializing...", "Fetching data...", "Analyzing...", "Compiling brief..."]
+                for i, step_name in enumerate(simulated_steps):
+                    show_progress_step(step_name, random.randint(300, 600)) 
+                    progress_bar.progress((i + 1) * (100 // len(simulated_steps)))
             
-            # Add voice parameters if in voice mode
+            orch_params = {
+                "mode": st.session_state.mode,
+                "session_id": st.session_state.session_id,
+                "model": st.session_state.model_selections.get("llm", {}).get("model"),
+                "temperature": st.session_state.model_selections.get("llm", {}).get("temperature"),
+                "max_tokens": st.session_state.model_selections.get("llm", {}).get("max_tokens"),
+                "analysis_provider": st.session_state.model_selections.get("analysis", {}).get("provider"),
+                "include_correlations": st.session_state.model_selections.get("analysis", {}).get("include_correlations"),
+                "include_risk_metrics": st.session_state.model_selections.get("analysis", {}).get("include_risk_metrics"),
+                "tickers": st.session_state.tickers, 
+                "news_limit": news_limit, # Value from slider via session_state key
+                "retrieve_k": retrieve_k, # Value from slider via session_state key
+                "topic": "finance, stocks" 
+            }
+            
             if st.session_state.mode == "voice":
                 voice_settings = st.session_state.model_selections.get("voice", {})
-                params["stt_provider"] = voice_settings.get("stt_provider")
-                params["tts_provider"] = voice_settings.get("tts_provider")
-                params["voice"] = voice_settings.get("voice")
-                params["speaking_rate"] = voice_settings.get("speaking_rate")
-                params["pitch"] = voice_settings.get("pitch")
-            
-            # Add analysis parameters
-            analysis_settings = st.session_state.model_selections.get("analysis", {})
-            params["analysis_provider"] = analysis_settings.get("provider")
-            params["include_correlations"] = analysis_settings.get("include_correlations")
-            params["include_risk_metrics"] = analysis_settings.get("include_risk_metrics")
-        
-        # Add audio bytes if in voice mode
-        if st.session_state.mode == "voice" and st.session_state.audio_bytes:
-            import base64
-            audio_base64 = base64.b64encode(st.session_state.audio_bytes).decode("utf-8")
-            params["audio_bytes"] = audio_base64
-        
-        # Add query parameters
-        params["symbols"] = ",".join(st.session_state.tickers)
-        params["topic"] = "finance, stocks" # Default topic
-        params["limit"] = news_limit
-        params["k"] = retrieve_k
-        
-        # Check if user input contains specific stock references
-        for ticker in st.session_state.tickers:
-            if ticker.lower() in user_input.lower():
-                params["symbols"] = ticker
-                break
-                
-        # Check if user wants a market brief
-        if "brief" in user_input.lower() or "summary" in user_input.lower():
-            params["topic"] = "market summary, finance news"
-            params["limit"] = 5  # Get more articles for comprehensive brief
-        
-        # Show step progress
-        with progress_container:
-            show_progress_step("Processing query", 500)
-            progress_bar.progress(20)
-            
-            show_progress_step("Retrieving financial data", 800)
-            progress_bar.progress(40)
-            
-            show_progress_step("Gathering news articles", 800)
-            progress_bar.progress(60)
-            
-            show_progress_step("Analyzing market trends", 800)
-            progress_bar.progress(80)
+                orch_params.update({
+                    "stt_provider": voice_settings.get("stt_provider"),
+                    "tts_provider": voice_settings.get("tts_provider"),
+                    "voice": voice_settings.get("voice"),
+                    "speaking_rate": voice_settings.get("speaking_rate"),
+                    "pitch": voice_settings.get("pitch")
+                })
+                if st.session_state.audio_bytes:
+                    import base64 
+                    orch_params["audio_bytes_b64"] = base64.b64encode(st.session_state.audio_bytes).decode("utf-8")
 
-        # Call orchestrator
-        with st.spinner("Generating your financial brief..."):
-            try:
-                response = call_orchestrator(user_input, st.session_state.mode, params)
-                progress_bar.progress(100)
-                
-                if response:
-                    output_text = response.get("output", "Sorry, I couldn't generate a response.")
-                    steps = response.get("steps", [])
-                    errors = response.get("errors", [])
-                    audio_url = response.get("audio_url")
+            for ticker in st.session_state.tickers: 
+                if ticker.lower() in query_to_process.lower():
+                    orch_params["symbols_mentioned"] = ticker 
+                    break
+            if "brief" in query_to_process.lower() or "summary" in query_to_process.lower():
+                orch_params["topic"] = "market summary, financial news"
+                orch_params["news_limit"] = max(orch_params["news_limit"], 5)
+            
+            with st.spinner("🤖 FinAI is thinking... Generating your financial brief..."):
+                try:
+                    response = call_orchestrator(query_to_process, orch_params)
+                    progress_bar.progress(100) 
+                    progress_area.empty() 
                     
-                    # Store response in session state
-                    st.session_state.last_response = response
-                    
-                    # Save any analysis results for the portfolio dashboard
-                    for step in steps:
-                        if step.get("tool") == "analysis_agent" and "response" in step:
-                            st.session_state.last_analysis = step["response"]
-                    
-                    # Display output
-                    st.header("Your Financial Brief")
-                    render_card("Financial Intelligence Brief", output_text, icon="chart-line", card_type="info")
-                    
-                    # Play audio if available and in voice mode
-                    if st.session_state.mode == "voice" and audio_url:
-                        render_audio_player(audio_url, autoplay=True)
+                    if response:
+                        st.session_state.last_response = response
+                        output_text = response.get("output", "Sorry, I couldn't generate a response.")
                         
-                    # Add tabs for details
-                    result_tabs = st.tabs(["Agent Steps", "Raw Data", "Errors"])
-                    
-                    # Agent Steps tab
-                    with result_tabs[0]:
-                        if steps:
-                            st.subheader("Process Details")
-                            for i, step in enumerate(steps):
-                                tool_name = step.get("tool", f"Step {i+1}")
-                                latency = step.get("latency_ms", 0)
-                                st.markdown(f"**{tool_name}** - {latency}ms")
-                                # Show simplified response
-                                if "response" in step:
-                                    if isinstance(step["response"], dict):
-                                        # Show compact view for dict responses
-                                        if "text" in step["response"]:
-                                            st.markdown(f"*Response:* {step['response']['text'][:200]}...")
-                                        elif "summary" in step["response"]:
-                                            st.markdown(f"*Summary:* {step['response']['summary'][:200]}...")
-                                    elif isinstance(step["response"], str):
-                                        st.markdown(f"*Response:* {step['response'][:200]}...")
-                        else:
-                            st.info("No process steps recorded.")
+                        for step in response.get("steps", []):
+                            if step.get("tool") == "analysis_agent" and "response" in step:
+                                st.session_state.last_analysis = step["response"]
+                                break 
+                        
+                        st.header("📈 Your Financial Brief")
+                        render_card("FinAI Response", output_text, icon="fa-lightbulb", card_type="info")
+                        
+                        audio_output_b64 = response.get("audio_output_b64") 
+                        if st.session_state.mode == "voice" and audio_output_b64:
+                            try:
+                                import base64 
+                                audio_bytes_out = base64.b64decode(audio_output_b64)
+                                render_audio_player(audio_bytes_out, autoplay=True)
+                            except Exception as e:
+                                st.warning(f"Could not play audio response: {e}")
+                        
+                        result_tabs_titles = ["Agent Steps", "Raw Response", "Errors"]
+                        res_tabs = st.tabs(result_tabs_titles)
+                        
+                        with res_tabs[0]: 
+                            steps = response.get("steps", [])
+                            if steps:
+                                st.markdown("##### Process Details")
+                                for i, step in enumerate(steps):
+                                    tool_name = step.get("tool", f"Step {i+1}")
+                                    latency = step.get("latency_ms", "N/A")
+                                    st.markdown(f"**{tool_name}** (Latency: {latency}ms)")
+                                    step_resp = step.get("response")
+                                    if isinstance(step_resp, dict):
+                                        summary_text = step_resp.get("summary", step_resp.get("text", str(step_resp)[:150] + "..."))
+                                        st.caption(f"Output: {str(summary_text)[:200]}...")
+                                    elif isinstance(step_resp, str):
+                                        st.caption(f"Output: {step_resp[:200]}...")
+                            else:
+                                st.caption("No process steps recorded.")
+                        
+                        with res_tabs[1]: 
+                            st.json(response, expanded=False)
                             
-                    # Raw Data tab
-                    with result_tabs[1]:
-                        st.json(response)
+                        with res_tabs[2]: 
+                            errors = response.get("errors", [])
+                            if errors:
+                                st.error("The following errors occurred during processing:")
+                                for error in errors:
+                                    st.code(f"Tool: {error.get('tool', 'Unknown')}\nError: {error.get('message', 'Unknown error')}", language="text")
+                            else:
+                                st.success("No errors reported during processing. ✅")
                         
-                    # Errors tab
-                    with result_tabs[2]:
-                        if errors:
-                            st.error("The following errors occurred:")
-                            for error in errors:
-                                st.error(f"**{error.get('tool', 'Unknown')}**: {error.get('message', 'Unknown error')}")
-                        else:
-                            st.success("No errors were reported!")
-                    
-                    # Add to history
-                    st.session_state.history.append({
-                        "query": user_input,
-                        "response": output_text,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "params": params
-                    })
-                    
-                    # Display download options
-                    st.subheader("Export Options")
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        # Download as PDF
+                        st.session_state.history.append({
+                            "query": query_to_process, "response": output_text,
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "params": {k: v for k, v in orch_params.items() if k != "audio_bytes_b64"} 
+                        })
+                        
+                        st.markdown("--- \n ##### Export Options")
+                        export_cols = st.columns(3)
                         pdf_bytes = generate_pdf(output_text, "financial_brief.pdf")
-                        st.download_button(
-                            label="Download as PDF",
-                            data=pdf_bytes,
-                            file_name=f"finai_brief_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                            mime="application/pdf"
-                        )
-                    
-                    with col2:
-                        # Download as text
-                        st.download_button(
-                            label="Download as Text",
-                            data=output_text,
-                            file_name=f"finai_brief_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                            mime="text/plain"
-                        )
-                    
-                    with col3:
-                        if audio_url:
-                            st.markdown(f"[Download Audio]({audio_url})")
-                else:
-                    st.error("Failed to get a response from the orchestrator.")
-                    
-            except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
-                st.exception(e)
-            
-            # This section is now handled in the try/except block above
+                        export_cols[0].download_button("📄 Download PDF", pdf_bytes, f"FinAI_Brief_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf", "application/pdf", use_container_width=True)
+                        export_cols[1].download_button("📝 Download Text", output_text, f"FinAI_Brief_{datetime.now().strftime('%Y%m%d_%H%M')}.txt", "text/plain", use_container_width=True)
+                        if st.session_state.mode == "voice" and audio_output_b64: 
+                            try:
+                                import base64
+                                audio_dl_bytes = base64.b64decode(audio_output_b64)
+                                export_cols[2].download_button("🔊 Download Audio", audio_dl_bytes, f"FinAI_Audio_{datetime.now().strftime('%Y%m%d_%H%M')}.mp3", "audio/mp3", use_container_width=True)
+                            except: pass #NOSONAR
 
-    # Display history
-    if st.session_state.history:
-        with st.container():
-            st.markdown("<hr>", unsafe_allow_html=True)
-            st.header("Query History")
-            
-            # Tab options for history display
+                    else:
+                        st.error("❌ Orchestrator did not return a valid response.")
+                        
+                except Exception as e:
+                    st.error(f"⚠️ An application error occurred: {str(e)}")
+                    st.exception(e) 
+                
+                st.session_state.user_input_text = ""
+                st.session_state.transcript_text = ""
+                st.session_state.audio_bytes = None 
+                st.session_state.last_audio_bytes_processed = None
+
+    query_to_process = st.session_state.get("query_to_process", "") # Re-fetch for safety, though it's cleared above
+    if st.session_state.history and not st.session_state.get("trigger_processing", False) and not query_to_process :
+        with st.expander("📜 Query History", expanded=False):
             def show_list_view():
                 for i, item in enumerate(reversed(st.session_state.history)):
-                    with st.expander(f"**{item['timestamp']}** - {item['query'][:50]}...", expanded=(i==0)):
-                        render_card("Response", item["response"], card_type="default")
+                    with st.container():
+                        st.markdown(f"<small><b>{item['timestamp']}</b> - Query: <i>{item['query'][:60]}...</i></small>", unsafe_allow_html=True)
+                        st.caption(f"Response: {item['response'][:120]}...")
+                        if st.button("View Details", key=f"hist_detail_{i}", type="secondary"):
+                            st.info(f"Full Query: {item['query']}")
+                            render_card("Archived Response", item['response'], card_type="default")
+                        st.markdown("---")
             
             def show_table_view():
-                history_data = [{
-                    "Time": item["timestamp"],
-                    "Query": item["query"][:50] + ("..." if len(item["query"]) > 50 else ""),
-                    "Mode": item["params"].get("mode", "text").capitalize()
+                history_df_data = [{
+                    "Time": item["timestamp"], "Query": item["query"],
+                    "Mode": item["params"].get("mode", "N/A").capitalize()
                 } for item in st.session_state.history]
-                
-                st.dataframe(pd.DataFrame(history_data), use_container_width=True)
+                st.dataframe(pd.DataFrame(history_df_data).iloc[::-1], use_container_width=True, hide_index=True) 
             
-            # Display tabs
-            render_tabs({
-                "List View": show_list_view,
-                "Table View": show_table_view
-            })
-
+            render_tabs({"List View": show_list_view, "Table View": show_table_view})
 
 if __name__ == "__main__":
     main()
