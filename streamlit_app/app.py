@@ -56,8 +56,15 @@ class AudioRecorderProcessor(AudioProcessorBase):
         return audio_bytes
 
 load_dotenv()
+# Default URLs for containerized environment
 ORCH_URL = os.getenv("ORCH_URL", "http://orchestrator:8004")
 VOICE_URL = os.getenv("VOICE_URL", "http://voice_agent:8006")
+
+# Fallback to localhost for local development if needed
+if ORCH_URL == "http://orchestrator:8004" and os.getenv("ENVIRONMENT", "prod").lower() == "dev":
+    ORCH_URL = "http://localhost:8004"
+if VOICE_URL == "http://voice_agent:8006" and os.getenv("ENVIRONMENT", "prod").lower() == "dev":
+    VOICE_URL = "http://localhost:8006"
 
 st.set_page_config(
     page_title="FinAI - Financial Intelligence Assistant",

@@ -1,9 +1,32 @@
 import io
 import json # Keep for potential future use, though not strictly needed now if orchestrator handles all
 import requests
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 from fpdf import FPDF
 import os # For environment variables
 import base64 # For audio encoding/decoding
+
+
+# Create a session with retry logic for more resilient API calls
+def create_retry_session(retries=3, backoff_factor=0.3, status_forcelist=(500, 502, 503, 504, 408)):
+    """Create a requests session with retry functionality."""
+    retry_strategy = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session = requests.Session()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+# Create a session to be used by all API calls
+session = create_retry_session()
 
 
 def call_orchestrator(input_text, params: dict):
@@ -61,7 +84,7 @@ def call_orchestrator(input_text, params: dict):
         if params.get("mode") == "voice" and params.get("audio_bytes_b64"):
             request_data["audio_bytes_b64"] = params["audio_bytes_b64"]
             
-        response = requests.post(
+        response = session.post(
             url,
             json=request_data,
             timeout=120  # Increased timeout for potentially long operations
@@ -85,7 +108,7 @@ def call_stt(file_bytes):
         url = f"{os.getenv('VOICE_URL', 'http://voice_agent:8006')}/stt"
         audio_base64 = base64.b64encode(file_bytes).decode("utf-8")
         
-        response = requests.post(url, json={"audio_base64": audio_base64}, timeout=30) # Key changed for clarity
+        response = session.post(url, json={"audio_base64": audio_base64}, timeout=30) # Key changed for clarity
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -108,7 +131,7 @@ def call_tts(text, params: dict):
             "pitch": params.get("pitch", 0.0)
         }
         
-        response = requests.post(url, json=request_data, timeout=45)
+        response = session.post(url, json=request_data, timeout=45)
         response.raise_for_status()
         
         # Expecting JSON response with base64 audio, e.g., {"audio_base64": "..."}

@@ -13,8 +13,9 @@ python-dotenv>=1.0.0
 requests>=2.31.0         # For making HTTP requests
 
 # Audio/Video processing
-streamlit-webrtc>=0.47.3  # Audio/Video streaming and recording
-av>=10.0.0,<11.0.0       # Audio/Video processing (required by streamlit-webrtc)
+streamlit-webrtc>=0.47.3,<0.48.0  # Audio/Video streaming and recording
+av>=10.0.0,<11.0.0             # Audio/Video processing (required by streamlit-webrtc)
+pydub>=0.25.1,<1.0.0          # Audio processing (required for audio handling)
 
 # Data visualization
 plotly>=5.15.0
