@@ -1,18 +1,8 @@
-# Core dependencies
-fastapi>=0.104.1,<0.110.0
-uvicorn[standard]>=0.24.0,<0.35.0
-pydantic>=2.7.4,<3.0.0
-pydantic-settings>=2.0.3,<3.0.0
-python-dotenv>=1.0.0,<2.0.0
-httpx>=0.25.0,<0.28.0
-numpy>=1.26.1,<2.0.0
-pandas>=2.0.3,<3.0.0  # Needed for financial analysis
+# Analysis Agent specialized dependencies
+# Note: Core dependencies are already in the main requirements.txt file
 
-# Testing
-pytest>=7.0.0,<8.0.0
-pytest-asyncio>=0.21.0,<0.24.0
+# The following dependencies are needed specifically for the Analysis Agent
+# If you're installing just this agent, use:
+# pip install -r requirements.txt -r agents/analysis_agent/requirements-analysis.txt
 
-# Financial analysis utilities
-scipy>=1.10.1          # For statistical calculations
-statsmodels>=0.14.0    # For time series analysis
-pyportfolioopt>=1.5.4  # For portfolio optimization
+# No additional dependencies are needed beyond what's in the main requirements.txt
