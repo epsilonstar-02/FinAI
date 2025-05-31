@@ -1,6 +1,6 @@
-# agents/language_agent/multi_llm_client.py
-# Enhanced error details, parameter mapping, and robustness.
-
+"""
+Multi-provider LLM client that supports multiple language model providers with fallback mechanisms.
+"""
 import os
 import logging
 import asyncio
@@ -9,399 +9,421 @@ from functools import wraps
 from typing import List, Dict, Any, Optional, Tuple
 import json
 import hashlib
+import inspect
 
 from cachetools import TTLCache
-from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+    AsyncRetrying, # For async functions
+)
 
-# Provider SDKs/libraries
+# Import providers
 import google.generativeai as genai
 import openai
 import anthropic
-from huggingface_hub import AsyncInferenceClient as HFAsyncInferenceClient # Renamed for clarity
-from langchain_community.llms import LlamaCpp # Keep this import style
-from transformers import pipeline as hf_transformers_pipeline # For local HF models
 
+# Config and exceptions
 from .config import settings, LLMProvider
 
+# Configure logging
+logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
 logger = logging.getLogger(__name__)
+
 
 class LLMClientError(Exception):
     """Base exception for all LLM client errors."""
     pass
 
+
 class ProviderError(LLMClientError):
-    def __init__(self, provider: str, message: str, original_exception: Optional[Exception] = None):
+    """Exception raised when a specific provider fails."""
+    def __init__(self, provider: str, message: str):
         self.provider = provider
         self.message = message
-        self.original_exception = original_exception
-        super().__init__(f"Provider '{provider}' error: {message}" + (f" (Original: {type(original_exception).__name__})" if original_exception else ""))
+        super().__init__(f"Provider '{provider}' error: {message}")
+
 
 class AllProvidersFailedError(LLMClientError):
+    """Exception raised when all providers fail."""
     def __init__(self, provider_errors: Dict[str, str]):
-        self.provider_errors = provider_errors # Store full error messages
-        error_summary = "; ".join([f"'{p}': {e[:100]}..." if len(e) > 100 else f"'{p}': {e}" for p, e in provider_errors.items()])
-        super().__init__(f"All configured providers failed. Error summary: {error_summary}")
+        self.provider_errors = provider_errors
+        error_msg = "; ".join([f"'{p}': {e}" for p, e in provider_errors.items()])
+        super().__init__(f"All configured providers failed. Errors: {error_msg}")
+
 
 # Response cache
-_response_cache = TTLCache(maxsize=1000, ttl=settings.CACHE_TTL) if settings.CACHE_RESPONSES else None
+response_cache = TTLCache(maxsize=1000, ttl=settings.CACHE_TTL) if settings.CACHE_RESPONSES else None
+
 
 def cache_response(func):
+    """Decorator to cache responses from LLM providers."""
     @wraps(func)
     async def wrapper(*args, **kwargs):
-        if not settings.CACHE_RESPONSES or _response_cache is None:
+        if not settings.CACHE_RESPONSES or not response_cache:
             return await func(*args, **kwargs)
 
-        # Create a cache key from args and kwargs
-        # Exclude 'self' from args if it's a method
-        key_args = args[1:] if (args and hasattr(func, '__self__') and args[0] is func.__self__) else args
+        key_components = []
+        # Exclude 'self' if it's a method of a class
+        start_index = 0
+        if args and hasattr(func, '__self__') and args[0] is func.__self__:
+            start_index = 1 
+        key_components.extend(list(args[start_index:]))
+        
+        for k, v in sorted(kwargs.items()):
+            key_components.append((k, v))
         
         try:
-            # Use a dictionary for key components for consistent ordering via sorted(kwargs.items())
-            key_dict = {"args": key_args}
-            key_dict.update(kwargs)
-            serialized_key_content = json.dumps(key_dict, sort_keys=True, default=str)
+            serialized_key_content = json.dumps(key_components, sort_keys=True, default=str)
             cache_key = hashlib.sha256(serialized_key_content.encode('utf-8')).hexdigest()
         except (TypeError, ValueError) as e:
-            logger.warning(f"Cache key generation failed for {func.__name__}: {e}. Skipping cache.")
+            logger.warning(f"Failed to create cache key for {func.__name__}: {e}. Skipping cache.")
             return await func(*args, **kwargs)
 
-        if cache_key in _response_cache:
-            logger.debug(f"Cache hit for {func.__name__} (key: {cache_key[:10]}...).")
-            return _response_cache[cache_key]
+        if cache_key in response_cache:
+            logger.debug(f"Cache hit for key: {cache_key[:10]}...")
+            return response_cache[cache_key]
 
         result = await func(*args, **kwargs)
-        _response_cache[cache_key] = result
+        response_cache[cache_key] = result # Store the actual result
         return result
     return wrapper
 
 
 class MultiLLMClient:
+    """
+    Client that can interact with multiple LLM providers with fallback mechanisms.
+    """
+    
     def __init__(self):
-        self.provider_errors: Dict[str, str] = {}
-        # Lazy-loaded local models/pipelines
-        self._llama_model: Optional[LlamaCpp] = None
-        self._hf_local_pipeline: Optional[Any] = None # Type depends on transformers.pipeline
-        
-        # Initialize provider SDKs and list available ones
         self.available_providers = self._initialize_providers()
+        self.provider_errors: Dict[str, str] = {}
+        
+        # For caching initialized local models/pipelines
+        self.llama_model = None
+        self.hf_local_pipeline = None
+        
         if not self.available_providers:
-            logger.critical("CRITICAL: No LLM providers are available/configured. The Language Agent will not function.")
-            # Raise an error or allow app to start in degraded mode, handled by main.py
+            logger.warning("No LLM providers seem to be fully available/configured based on settings. API key or model path issues might exist.")
 
     def _initialize_providers(self) -> List[LLMProvider]:
+        """Initialize SDKs for available providers and list them."""
         available = []
-        provider_init_statuses = {}
-
+        
         if settings.is_provider_available(LLMProvider.GOOGLE):
             try:
-                genai.configure(api_key=settings.GEMINI_API_KEY, transport='rest') # Using REST for wider compatibility
+                genai.configure(api_key=settings.GEMINI_API_KEY)
                 available.append(LLMProvider.GOOGLE)
-                provider_init_statuses[LLMProvider.GOOGLE.value] = "OK"
+                logger.info("Google Generative AI provider initialized.")
             except Exception as e:
-                provider_init_statuses[LLMProvider.GOOGLE.value] = f"Failed: {e}"
+                logger.warning(f"Failed to initialize Google Generative AI: {str(e)}")
         
         if settings.is_provider_available(LLMProvider.OPENAI):
             try:
-                # openai.api_key = settings.OPENAI_API_KEY # Client init handles this
-                # if settings.OPENAI_ORGANIZATION:
-                #    openai.organization = settings.OPENAI_ORGANIZATION
+                openai.api_key = settings.OPENAI_API_KEY
+                if settings.OPENAI_ORGANIZATION:
+                    openai.organization = settings.OPENAI_ORGANIZATION
                 available.append(LLMProvider.OPENAI)
-                provider_init_statuses[LLMProvider.OPENAI.value] = "OK (Key set)"
-            except Exception as e: # Should not happen if key is just set
-                provider_init_statuses[LLMProvider.OPENAI.value] = f"Failed: {e}"
-
+                logger.info("OpenAI provider initialized.")
+            except Exception as e:
+                logger.warning(f"Failed to initialize OpenAI: {str(e)}")
+        
         if settings.is_provider_available(LLMProvider.ANTHROPIC):
+            # Anthropic client is initialized per-request with API key
             available.append(LLMProvider.ANTHROPIC)
-            provider_init_statuses[LLMProvider.ANTHROPIC.value] = "OK (Key set)"
+            logger.info("Anthropic provider configured (client initialized per request).")
 
         if settings.is_provider_available(LLMProvider.LLAMA):
             available.append(LLMProvider.LLAMA)
-            provider_init_statuses[LLMProvider.LLAMA.value] = f"OK (Path: {settings.LLAMA_MODEL_PATH}, lazy load)"
+            logger.info(f"Llama provider configured (model at {settings.LLAMA_MODEL_PATH} will be loaded on first use).")
         
         if settings.is_provider_available(LLMProvider.HUGGINGFACE):
             available.append(LLMProvider.HUGGINGFACE)
-            status_detail = "local model, lazy load" if settings.HUGGINGFACE_USE_LOCAL else "API key set"
-            provider_init_statuses[LLMProvider.HUGGINGFACE.value] = f"OK ({status_detail})"
+            if settings.HUGGINGFACE_USE_LOCAL:
+                logger.info(f"HuggingFace local provider configured (model {settings.HUGGINGFACE_MODEL} will be loaded on first use).")
+            else:
+                logger.info("HuggingFace API provider configured.")
         
-        logger.info(f"LLM Provider Initialization Status: {provider_init_statuses}")
-        logger.info(f"Final list of available LLM providers: {[p.value for p in available]}")
         return available
 
-    async def _run_with_retry(self, provider_name_str: str, async_target_callable, *args):
+    async def _run_with_retry(self, provider_name: str, async_target_callable, *args):
+        """Helper to run an async callable with retry logic and wrap exceptions."""
         retryer = AsyncRetrying(
             stop=stop_after_attempt(settings.MAX_RETRIES),
-            wait=wait_exponential(multiplier=settings.RETRY_DELAY, min=1, max=10),
-            reraise=True, # Reraise the last exception after retries
+            wait=wait_exponential(multiplier=settings.RETRY_DELAY, min=settings.RETRY_DELAY, max=10), # Cap max wait
+            reraise=True,
         )
         try:
             return await retryer.call(async_target_callable, *args)
-        except asyncio.TimeoutError as e_timeout:
+        except asyncio.TimeoutError:
             msg = f"Request timed out after {settings.TIMEOUT}s (including retries)"
-            logger.warning(f"{provider_name_str}: {msg}")
-            raise ProviderError(provider_name_str, msg, e_timeout)
-        except Exception as e: # Catch-all for other errors after retries
+            logger.warning(f"{provider_name}: {msg}")
+            raise ProviderError(provider_name, msg)
+        except Exception as e:
+            # Catch-all for other errors after retries
             msg = f"Failed after {settings.MAX_RETRIES} retries: {str(e)}"
-            logger.warning(f"{provider_name_str}: {msg} (Type: {type(e).__name__})")
-            raise ProviderError(provider_name_str, msg, e)
+            logger.warning(f"{provider_name}: {msg} - {type(e).__name__}")
+            # logger.debug(traceback.format_exc()) # For more detailed debugging
+            raise ProviderError(provider_name, msg)
 
-
-    async def _execute_google_call(self, prompt: str, gen_args: Dict[str, Any]) -> str:
+    async def _execute_google_call(self, prompt: str, generation_args: Dict[str, Any]):
         model = genai.GenerativeModel(settings.GEMINI_MODEL)
+        # Gemini uses "max_output_tokens", so map "max_tokens"
         config_args = {
-            "temperature": gen_args.get("temperature", settings.TEMPERATURE),
-            "top_k": gen_args.get("top_k", settings.TOP_K),
-            "top_p": gen_args.get("top_p", settings.TOP_P),
-            "max_output_tokens": gen_args.get("max_tokens", settings.MAX_TOKENS),
+            "temperature": generation_args.get("temperature", settings.TEMPERATURE),
+            "top_k": generation_args.get("top_k", settings.TOP_K),
+            "top_p": generation_args.get("top_p", settings.TOP_P),
+            "max_output_tokens": generation_args.get("max_tokens", settings.MAX_TOKENS),
         }
+        # Gemini API expects GenerationConfig object for these
         gemini_config = genai.types.GenerationConfig(**config_args)
         
         response = await asyncio.wait_for(
             model.generate_content_async(prompt, generation_config=gemini_config),
             timeout=settings.TIMEOUT
         )
-        if not response.candidates or not response.candidates[0].content.parts:
-             raise ProviderError(LLMProvider.GOOGLE.value, "No content in Gemini response.")
-        return response.text # .text convenience accessor handles parts
+        return response.text
 
-    async def _generate_google(self, prompt: str, gen_args: Dict[str, Any]) -> str:
-        return await self._run_with_retry(LLMProvider.GOOGLE.value, self._execute_google_call, prompt, gen_args)
+    async def _generate_google(self, prompt: str, generation_args: Optional[Dict[str, Any]] = None) -> str:
+        final_gen_args = generation_args or {}
+        return await self._run_with_retry(LLMProvider.GOOGLE.value, self._execute_google_call, prompt, final_gen_args)
 
-
-    async def _execute_openai_call(self, prompt: str, gen_args: Dict[str, Any]) -> str:
-        # OpenAI Python SDK v1.x uses openai.AsyncOpenAI()
-        client = openai.AsyncOpenAI(api_key=settings.OPENAI_API_KEY, organization=settings.OPENAI_ORGANIZATION)
+    async def _execute_openai_call(self, prompt: str, generation_args: Dict[str, Any]):
+        # OpenAI uses "max_tokens" directly
         response = await asyncio.wait_for(
-            client.chat.completions.create(
+            openai.chat.completions.create(
                 model=settings.OPENAI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=gen_args.get("temperature", settings.TEMPERATURE),
-                max_tokens=gen_args.get("max_tokens", settings.MAX_TOKENS),
-                top_p=gen_args.get("top_p", settings.TOP_P),
+                temperature=generation_args.get("temperature", settings.TEMPERATURE),
+                max_tokens=generation_args.get("max_tokens", settings.MAX_TOKENS),
+                top_p=generation_args.get("top_p", settings.TOP_P),
+                # top_k not directly supported in chat completions, managed by top_p
             ),
             timeout=settings.TIMEOUT
         )
-        if not response.choices or not response.choices[0].message.content:
-            raise ProviderError(LLMProvider.OPENAI.value, "No content in OpenAI response.")
         return response.choices[0].message.content
 
-    async def _generate_openai(self, prompt: str, gen_args: Dict[str, Any]) -> str:
-        return await self._run_with_retry(LLMProvider.OPENAI.value, self._execute_openai_call, prompt, gen_args)
+    async def _generate_openai(self, prompt: str, generation_args: Optional[Dict[str, Any]] = None) -> str:
+        final_gen_args = generation_args or {}
+        return await self._run_with_retry(LLMProvider.OPENAI.value, self._execute_openai_call, prompt, final_gen_args)
 
-
-    async def _execute_anthropic_call(self, prompt: str, gen_args: Dict[str, Any]) -> str:
-        client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    async def _execute_anthropic_call(self, prompt: str, generation_args: Dict[str, Any]):
+        client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY) # Use Async client
+        # Anthropic uses "max_tokens" directly
         response = await asyncio.wait_for(
             client.messages.create(
                 model=settings.ANTHROPIC_MODEL,
-                max_tokens=gen_args.get("max_tokens", settings.MAX_TOKENS),
-                temperature=gen_args.get("temperature", settings.TEMPERATURE),
-                top_p=gen_args.get("top_p", settings.TOP_P), # Anthropic supports top_p
-                top_k=gen_args.get("top_k", settings.TOP_K), # Anthropic supports top_k
+                max_tokens=generation_args.get("max_tokens", settings.MAX_TOKENS),
+                temperature=generation_args.get("temperature", settings.TEMPERATURE),
+                # top_p and top_k might be supported, check Anthropic docs if needed
                 messages=[{"role": "user", "content": prompt}]
             ),
             timeout=settings.TIMEOUT
         )
-        if not response.content or not response.content[0].text:
-            raise ProviderError(LLMProvider.ANTHROPIC.value, "No content in Anthropic response.")
         return response.content[0].text
 
-    async def _generate_anthropic(self, prompt: str, gen_args: Dict[str, Any]) -> str:
-        return await self._run_with_retry(LLMProvider.ANTHROPIC.value, self._execute_anthropic_call, prompt, gen_args)
+    async def _generate_anthropic(self, prompt: str, generation_args: Optional[Dict[str, Any]] = None) -> str:
+        final_gen_args = generation_args or {}
+        return await self._run_with_retry(LLMProvider.ANTHROPIC.value, self._execute_anthropic_call, prompt, final_gen_args)
 
-
-    def _load_llama_model_sync(self, gen_args: Dict[str, Any]): # Synchronous part
-        if self._llama_model is None:
+    def _load_llama_model_sync(self, generation_args: Dict[str, Any]):
+        # This part runs in an executor, so synchronous imports are fine here.
+        from langchain_community.llms import LlamaCpp # Updated import
+        
+        if self.llama_model is None:
             logger.info(f"Initializing LlamaCpp model from {settings.LLAMA_MODEL_PATH}...")
-            try:
-                self._llama_model = LlamaCpp(
-                    model_path=str(settings.LLAMA_MODEL_PATH), # Ensure path is string
-                    n_ctx=settings.LLAMA_N_CTX,
-                    n_batch=settings.LLAMA_N_BATCH,
-                    temperature=gen_args.get("temperature", settings.TEMPERATURE),
-                    top_p=gen_args.get("top_p", settings.TOP_P),
-                    # LlamaCpp max_tokens is more like n_predict
-                    max_tokens=gen_args.get("max_tokens", settings.MAX_TOKENS), 
-                    # top_k=gen_args.get("top_k", settings.TOP_K), # Check LlamaCpp param name for top_k
-                    n_gpu_layers=-1 if settings.LLAMA_USE_GPU else 0,
-                    verbose=False
-                )
-                logger.info("LlamaCpp model initialized.")
-            except Exception as e:
-                self._llama_model = None # Ensure it's None on failure
-                logger.error(f"Failed to load LlamaCpp model: {e}", exc_info=True)
-                raise ProviderError(LLMProvider.LLAMA.value, f"LlamaCpp model loading failed: {e}", e)
-        else: # Update params
-            self._llama_model.temperature = gen_args.get("temperature", settings.TEMPERATURE)
-            self._llama_model.top_p = gen_args.get("top_p", settings.TOP_P)
-            self._llama_model.max_tokens = gen_args.get("max_tokens", settings.MAX_TOKENS)
-        return self._llama_model
+            self.llama_model = LlamaCpp(
+                model_path=settings.LLAMA_MODEL_PATH,
+                n_ctx=settings.LLAMA_N_CTX,
+                n_batch=settings.LLAMA_N_BATCH,
+                temperature=generation_args.get("temperature", settings.TEMPERATURE),
+                top_p=generation_args.get("top_p", settings.TOP_P),
+                max_tokens=generation_args.get("max_tokens", settings.MAX_TOKENS),
+                # top_k might be specific to LlamaCpp version/params
+                n_gpu_layers=-1 if settings.LLAMA_USE_GPU else 0,
+                verbose=False # Keep logs cleaner
+            )
+            logger.info("LlamaCpp model initialized.")
+        else: # Update params if model already loaded
+            self.llama_model.temperature = generation_args.get("temperature", settings.TEMPERATURE)
+            self.llama_model.top_p = generation_args.get("top_p", settings.TOP_P)
+            self.llama_model.max_tokens = generation_args.get("max_tokens", settings.MAX_TOKENS)
+        return self.llama_model
 
-    async def _execute_llama_call(self, prompt: str, gen_args: Dict[str, Any]) -> str:
+    async def _execute_llama_call(self, prompt: str, generation_args: Dict[str, Any]):
         loop = asyncio.get_event_loop()
-        # Load/get model (this might raise ProviderError if loading fails)
-        llm_instance = await loop.run_in_executor(None, self._load_llama_model_sync, gen_args)
-        if llm_instance is None: # Should have been caught by _load_llama_model_sync
-             raise ProviderError(LLMProvider.LLAMA.value, "Llama model instance is None after attempting load.")
-        response_text = await loop.run_in_executor(None, llm_instance.invoke, prompt)
-        if not response_text:
-            raise ProviderError(LLMProvider.LLAMA.value, "Llama model returned empty response.")
-        return response_text
+        llm = await loop.run_in_executor(None, self._load_llama_model_sync, generation_args)
+        response = await loop.run_in_executor(None, llm.invoke, prompt)
+        return response
 
-    async def _generate_llama(self, prompt: str, gen_args: Dict[str, Any]) -> str:
-        return await self._run_with_retry(LLMProvider.LLAMA.value, self._execute_llama_call, prompt, gen_args)
+    async def _generate_llama(self, prompt: str, generation_args: Optional[Dict[str, Any]] = None) -> str:
+        final_gen_args = generation_args or {}
+        return await self._run_with_retry(LLMProvider.LLAMA.value, self._execute_llama_call, prompt, final_gen_args)
 
-
-    def _load_hf_pipeline_sync(self, gen_args: Dict[str, Any]): # Synchronous part
-        if self._hf_local_pipeline is None:
+    def _load_hf_pipeline_sync(self, generation_args: Dict[str, Any]):
+        # This part runs in an executor.
+        from transformers import pipeline
+        
+        if self.hf_local_pipeline is None:
             logger.info(f"Initializing HuggingFace local pipeline for model {settings.HUGGINGFACE_MODEL}...")
-            try:
-                # bitsandbytes quantization is complex and environment-dependent.
-                # For simplicity, removing direct BitsAndBytesConfig here.
-                # Users should configure it via transformers environment or model loading args if needed.
-                # device_map="auto" should handle GPU if available.
-                self.hf_local_pipeline = hf_transformers_pipeline(
-                    "text-generation",
-                    model=settings.HUGGINGFACE_MODEL,
-                    device_map="auto", 
-                    # trust_remote_code=True # May be needed for some models
-                )
-                logger.info("HuggingFace local pipeline initialized.")
-            except Exception as e:
-                self._hf_local_pipeline = None
-                logger.error(f"Failed to load HuggingFace local pipeline: {e}", exc_info=True)
-                raise ProviderError(LLMProvider.HUGGINGFACE.value, f"HF local pipeline loading failed: {e}", e)
-        return self._hf_local_pipeline
+            quantization_config = None
+            if settings.HUGGINGFACE_QUANTIZE == "4bit":
+                # Requires bitsandbytes
+                # quantization_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
+                logger.info("4bit quantization requested for HF local (ensure bitsandbytes is installed and configured).")
+            elif settings.HUGGINGFACE_QUANTIZE == "8bit":
+                # quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+                 logger.info("8bit quantization requested for HF local (ensure bitsandbytes is installed and configured).")
 
-    async def _execute_hf_local_call(self, prompt: str, gen_args: Dict[str, Any]) -> str:
+            self.hf_local_pipeline = pipeline(
+                "text-generation",
+                model=settings.HUGGINGFACE_MODEL,
+                device_map="auto", # Uses CUDA if available, then MPS, then CPU
+                # quantization_config=quantization_config # If using bitsandbytes
+            )
+            logger.info("HuggingFace local pipeline initialized.")
+        return self.hf_local_pipeline
+
+    async def _execute_hf_local_call(self, prompt: str, generation_args: Dict[str, Any]):
         loop = asyncio.get_event_loop()
-        text_generator = await loop.run_in_executor(None, self._load_hf_pipeline_sync, gen_args)
-        if text_generator is None:
-             raise ProviderError(LLMProvider.HUGGINGFACE.value, "HF local pipeline instance is None after attempting load.")
-
-        # Transformers pipeline params
-        pipeline_args = {
-            "max_new_tokens": gen_args.get("max_tokens", settings.MAX_TOKENS),
-            "temperature": gen_args.get("temperature", settings.TEMPERATURE),
-            "top_p": gen_args.get("top_p", settings.TOP_P),
-            "top_k": gen_args.get("top_k", settings.TOP_K),
-            "num_return_sequences": 1,
-            "pad_token_id": text_generator.tokenizer.eos_token_id if text_generator.tokenizer.eos_token_id else 50256 # Default for GPT-2
-        }
+        text_generator = await loop.run_in_executor(None, self._load_hf_pipeline_sync, generation_args)
         
-        response_list = await loop.run_in_executor(None, lambda: text_generator(prompt, **pipeline_args))
-        
-        if not response_list or not response_list[0].get("generated_text"):
-            raise ProviderError(LLMProvider.HUGGINGFACE.value, "HF local pipeline returned empty response.")
-        # The response includes the prompt. Need to extract only generated part if model doesn't do it.
-        # Most instruct/chat fine-tuned models output only the completion.
-        # If it includes prompt: generated_part = response_list[0]["generated_text"][len(prompt):]
-        return response_list[0]["generated_text"]
+        # Transformers pipeline uses "max_new_tokens" for controlling output length beyond prompt
+        # and "max_length" for total length. "max_tokens" usually means new tokens.
+        response = await loop.run_in_executor(
+            None,
+            lambda: text_generator(
+                prompt,
+                max_new_tokens=generation_args.get("max_tokens", settings.MAX_TOKENS),
+                temperature=generation_args.get("temperature", settings.TEMPERATURE),
+                top_p=generation_args.get("top_p", settings.TOP_P),
+                top_k=generation_args.get("top_k", settings.TOP_K),
+                num_return_sequences=1
+            )
+        )
+        return response[0]["generated_text"]
 
-    async def _execute_hf_api_call(self, prompt: str, gen_args: Dict[str, Any]) -> str:
-        client = HFAsyncInferenceClient(token=settings.HUGGINGFACE_API_KEY)
-        api_params = {
-            "max_new_tokens": gen_args.get("max_tokens", settings.MAX_TOKENS),
-            "temperature": gen_args.get("temperature", settings.TEMPERATURE),
-            "top_p": gen_args.get("top_p", settings.TOP_P),
-            "top_k": gen_args.get("top_k", settings.TOP_K),
-            # "return_full_text": False # Often useful to get only generated part
-        }
+    async def _execute_hf_api_call(self, prompt: str, generation_args: Dict[str, Any]):
+        from huggingface_hub import AsyncInferenceClient # Use async client
+
+        client = AsyncInferenceClient(token=settings.HUGGINGFACE_API_KEY)
+        # HF Inference API uses "max_new_tokens"
         response_text = await asyncio.wait_for(
-            client.text_generation(prompt, model=settings.HUGGINGFACE_MODEL, params=api_params),
+            client.text_generation(
+                prompt,
+                model=settings.HUGGINGFACE_MODEL,
+                max_new_tokens=generation_args.get("max_tokens", settings.MAX_TOKENS),
+                temperature=generation_args.get("temperature", settings.TEMPERATURE),
+                top_p=generation_args.get("top_p", settings.TOP_P),
+                top_k=generation_args.get("top_k", settings.TOP_K)
+            ),
             timeout=settings.TIMEOUT
         )
-        if not response_text:
-            raise ProviderError(LLMProvider.HUGGINGFACE.value, "HF API returned empty response.")
         return response_text
 
-    async def _generate_huggingface(self, prompt: str, gen_args: Dict[str, Any]) -> str:
-        provider_name_str = LLMProvider.HUGGINGFACE.value
+    async def _generate_huggingface(self, prompt: str, generation_args: Optional[Dict[str, Any]] = None) -> str:
+        final_gen_args = generation_args or {}
         if settings.HUGGINGFACE_USE_LOCAL:
-            return await self._run_with_retry(f"{provider_name_str}-local", self._execute_hf_local_call, prompt, gen_args)
+            return await self._run_with_retry(f"{LLMProvider.HUGGINGFACE.value}-local", self._execute_hf_local_call, prompt, final_gen_args)
         else:
-            if not settings.HUGGINGFACE_API_KEY:
-                raise ProviderError(provider_name_str, "HuggingFace API key not configured for API usage.")
-            return await self._run_with_retry(f"{provider_name_str}-api", self._execute_hf_api_call, prompt, gen_args)
-
+            return await self._run_with_retry(f"{LLMProvider.HUGGINGFACE.value}-api", self._execute_hf_api_call, prompt, final_gen_args)
 
     @cache_response
     async def generate_text(
         self, 
         prompt: str, 
         provider_preference: Optional[LLMProvider] = None,
-        generation_args: Optional[Dict[str, Any]] = None # Merged, e.g. {"temperature":0.5, "max_tokens":200}
+        generation_args: Optional[Dict[str, Any]] = None
     ) -> Tuple[str, LLMProvider]:
-        self.provider_errors.clear()
-        effective_gen_args = generation_args or {} # Ensure it's a dict
-
+        """
+        Generate text using the specified provider or the default provider.
+        Falls back to other providers if the initial provider(s) fail.
+        
+        Args:
+            prompt: The prompt to send to the model.
+            provider_preference: Optional specific provider to try first.
+            generation_args: Optional dictionary of generation parameters 
+                             (e.g., "temperature", "max_tokens") to override settings.
+            
+        Returns:
+            A tuple containing (generated_text: str, used_provider: LLMProvider).
+            
+        Raises:
+            AllProvidersFailedError: If all configured and attempted providers fail.
+            LLMClientError: If no providers are available/configured.
+        """
+        self.provider_errors.clear() # Clear errors from previous calls
+        
         providers_to_try: List[LLMProvider] = []
+        
+        # Build the order of providers to attempt
         if provider_preference and provider_preference in self.available_providers:
             providers_to_try.append(provider_preference)
         
-        # Add default if available and not already preferred
-        if settings.DEFAULT_PROVIDER in self.available_providers and \
-           settings.DEFAULT_PROVIDER not in providers_to_try:
+        if settings.DEFAULT_PROVIDER in self.available_providers and settings.DEFAULT_PROVIDER not in providers_to_try:
             providers_to_try.append(settings.DEFAULT_PROVIDER)
         
-        # Add fallbacks if available and not already in list
-        for fallback_provider in settings.FALLBACK_PROVIDERS:
-            if fallback_provider in self.available_providers and \
-               fallback_provider not in providers_to_try:
-                providers_to_try.append(fallback_provider)
+        for fallback in settings.FALLBACK_PROVIDERS:
+            if fallback in self.available_providers and fallback not in providers_to_try:
+                providers_to_try.append(fallback)
         
-        # Add any other available providers not yet tried (maintains some order)
+        # Add any remaining available providers not yet in the list
         for p_avail in self.available_providers:
             if p_avail not in providers_to_try:
                 providers_to_try.append(p_avail)
 
         if not providers_to_try:
-            raise LLMClientError("No LLM providers are available or configured to attempt generation.")
+            if not self.available_providers:
+                 raise LLMClientError("No LLM providers are available or configured correctly. Check API keys and model paths.")
+            else:
+                 # This case should ideally not be hit if available_providers is populated.
+                 raise LLMClientError("Could not determine any provider to try, despite some being available.")
 
-        logger.info(f"Attempting generation. Prompt length: {len(prompt)}. Order: {[p.value for p in providers_to_try]}. Args: {effective_gen_args}")
+        logger.info(f"Attempting generation with providers in order: {[p.value for p in providers_to_try]}")
 
-        for current_provider_enum in providers_to_try:
-            provider_str = current_provider_enum.value
+        for current_provider in providers_to_try:
             try:
-                logger.info(f"Attempting generation with: {provider_str}")
+                logger.info(f"Attempting generation with: {current_provider.value}")
                 text_result = ""
-                if current_provider_enum == LLMProvider.GOOGLE:
-                    text_result = await self._generate_google(prompt, effective_gen_args)
-                elif current_provider_enum == LLMProvider.OPENAI:
-                    text_result = await self._generate_openai(prompt, effective_gen_args)
-                elif current_provider_enum == LLMProvider.ANTHROPIC:
-                    text_result = await self._generate_anthropic(prompt, effective_gen_args)
-                elif current_provider_enum == LLMProvider.LLAMA:
-                    text_result = await self._generate_llama(prompt, effective_gen_args)
-                elif current_provider_enum == LLMProvider.HUGGINGFACE:
-                    text_result = await self._generate_huggingface(prompt, effective_gen_args)
+                if current_provider == LLMProvider.GOOGLE:
+                    text_result = await self._generate_google(prompt, generation_args)
+                elif current_provider == LLMProvider.OPENAI:
+                    text_result = await self._generate_openai(prompt, generation_args)
+                elif current_provider == LLMProvider.ANTHROPIC:
+                    text_result = await self._generate_anthropic(prompt, generation_args)
+                elif current_provider == LLMProvider.LLAMA:
+                    text_result = await self._generate_llama(prompt, generation_args)
+                elif current_provider == LLMProvider.HUGGINGFACE:
+                    text_result = await self._generate_huggingface(prompt, generation_args)
                 else:
-                    # Should not happen if providers_to_try is built from available_providers
-                    logger.warning(f"Unsupported provider enum value encountered: {current_provider_enum}. Skipping.")
-                    self.provider_errors[provider_str] = "Unsupported provider type in generation loop."
-                    continue 
+                    logger.warning(f"Unsupported provider enum value: {current_provider}. Skipping.")
+                    self.provider_errors[str(current_provider)] = "Unsupported provider type"
+                    continue
                 
-                logger.info(f"Successfully generated text using {provider_str}")
-                return text_result.strip(), current_provider_enum
+                logger.info(f"Successfully generated text using {current_provider.value}")
+                return text_result, current_provider # Return text and the successful provider
             
             except ProviderError as e:
-                # Error already logged by _run_with_retry or specific _generate_X
-                self.provider_errors[e.provider] = e.message # e.provider should match provider_str
-            except Exception as e_unexpected: # Catch truly unexpected errors from a provider attempt
-                logger.error(f"Unexpected error during {provider_str} generation: {e_unexpected}", exc_info=True)
-                self.provider_errors[provider_str] = f"Unexpected internal error: {str(e_unexpected)}"
+                logger.warning(str(e)) # Already includes provider name
+                self.provider_errors[e.provider] = e.message
+            except Exception as e: # Catch unexpected errors from a provider attempt
+                logger.error(f"Unexpected error during {current_provider.value} generation: {str(e)}", exc_info=True)
+                self.provider_errors[current_provider.value] = f"Unexpected: {str(e)}"
         
         raise AllProvidersFailedError(self.provider_errors)
 
-
-_multi_llm_client_instance: Optional[MultiLLMClient] = None
+# Singleton instance management
+_multi_llm_client: Optional[MultiLLMClient] = None
 
 def get_multi_llm_client() -> MultiLLMClient:
-    global _multi_llm_client_instance
-    if _multi_llm_client_instance is None:
-        _multi_llm_client_instance = MultiLLMClient()
-    return _multi_llm_client_instance
+    global _multi_llm_client
+    if _multi_llm_client is None:
+        _multi_llm_client = MultiLLMClient()
+    return _multi_llm_client
 
-async def generate_text_from_client( # Renamed to avoid conflict with internal client method
+async def generate_text(
     prompt: str, 
     provider: Optional[LLMProvider] = None,
     generation_args: Optional[Dict[str, Any]] = None
