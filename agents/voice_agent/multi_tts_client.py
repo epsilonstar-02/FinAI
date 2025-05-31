@@ -1,3 +1,5 @@
+# agents/voice_agent/multi_tts_client.py
+
 """
 Multi-provider Text-to-Speech client that supports multiple TTS services with fallback mechanisms.
 """
@@ -7,689 +9,531 @@ import logging
 import asyncio
 import time
 import tempfile
-from typing import List, Dict, Any, Optional, Union, Tuple, BinaryIO
+from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
-import traceback
-from functools import wraps
+import hashlib # For cache key
 
 # Caching
 from diskcache import Cache
 
 # Retry utilities
 from tenacity import (
-    retry,
-    retry_if_exception_type,
+    AsyncRetrying,
     stop_after_attempt,
     wait_exponential,
-    RetryError,
 )
 
 # Audio processing
-import numpy as np
-from pydub import AudioSegment
+from pydub import AudioSegment # For speed adjustment if provider doesn't support it
 
-# TTS providers
-# pyttsx3 (offline)
+# TTS provider SDKs/libraries
 try:
     import pyttsx3
     PYTTSX3_AVAILABLE = True
 except ImportError:
     PYTTSX3_AVAILABLE = False
+    logging.getLogger(__name__).warning("pyttsx3 library not found. pyttsx3 provider will be unavailable.")
 
-# gTTS (Google Text-to-Speech)
 try:
-    from gtts import gTTS
+    from gtts import gTTS, gTTSError
     GTTS_AVAILABLE = True
 except ImportError:
     GTTS_AVAILABLE = False
+    logging.getLogger(__name__).warning("gTTS library not found. gtts provider will be unavailable.")
 
-# Microsoft Edge TTS
 try:
     import edge_tts
     EDGE_TTS_AVAILABLE = True
 except ImportError:
     EDGE_TTS_AVAILABLE = False
+    logging.getLogger(__name__).warning("edge-tts library not found. edge provider will be unavailable.")
 
-# ElevenLabs
 try:
-    from elevenlabs import generate, set_api_key
+    from elevenlabs import generate as elevenlabs_generate, set_api_key as elevenlabs_set_api_key, voices as elevenlabs_voices, Voice as ElevenLabsVoice, VoiceSettings as ElevenLabsVoiceSettings
     ELEVENLABS_AVAILABLE = True
 except ImportError:
     ELEVENLABS_AVAILABLE = False
+    logging.getLogger(__name__).warning("elevenlabs library not found. elevenlabs provider will be unavailable.")
 
-# AWS Polly
 try:
     import boto3
     AWS_POLLY_AVAILABLE = True
 except ImportError:
     AWS_POLLY_AVAILABLE = False
+    logging.getLogger(__name__).warning("boto3 library not found. amazon-polly provider will be unavailable.")
 
-# Silero TTS
 try:
-    import torch
-    SILERO_AVAILABLE = True
+    import torch # For Silero
+    # Silero models are typically loaded via torch.hub or local paths
+    SILERO_AVAILABLE = True 
 except ImportError:
     SILERO_AVAILABLE = False
+    logging.getLogger(__name__).warning("torch library not found. silero provider will be unavailable.")
 
-# Coqui TTS
 try:
-    from TTS.api import TTS as CoquiTTS
+    from TTS.api import TTS as CoquiTTS_API # Renamed to avoid conflict
     COQUI_AVAILABLE = True
 except ImportError:
     COQUI_AVAILABLE = False
+    logging.getLogger(__name__).warning("TTS (Coqui) library not found. coqui provider will be unavailable.")
 
-# Local imports
+
 from .config import settings, TTSProvider
 
-# Configure logging
-logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
 logger = logging.getLogger(__name__)
 
 
-class TTSError(Exception):
-    """Base exception for TTS errors."""
-    pass
-
-
+class TTSError(Exception): pass
 class ProviderError(TTSError):
-    """Exception for specific provider errors."""
-    def __init__(self, provider: str, message: str):
+    def __init__(self, provider: str, message: str, original_exception: Optional[Exception] = None):
         self.provider = provider
         self.message = message
-        super().__init__(f"{provider} error: {message}")
-
-
+        self.original_exception = original_exception
+        super().__init__(f"Provider '{provider}' error: {message}" + (f" (Original: {type(original_exception).__name__})" if original_exception else ""))
 class AllProvidersFailedError(TTSError):
-    """Exception when all providers fail."""
     def __init__(self, provider_errors: Dict[str, str]):
         self.provider_errors = provider_errors
-        error_msg = "; ".join([f"{p}: {e}" for p, e in provider_errors.items()])
-        super().__init__(f"All TTS providers failed: {error_msg}")
+        error_summary = "; ".join([f"'{p}': {e[:100]}..." if len(e) > 100 else f"'{p}': {e}" for p, e in provider_errors.items()])
+        super().__init__(f"All TTS providers failed. Error summary: {error_summary}")
 
 
 class MultiTTSClient:
-    """Client that supports multiple TTS providers with fallback mechanisms."""
-    
     def __init__(self):
-        """Initialize the multi-TTS client."""
-        self.available_providers = self._initialize_providers()
-        self.provider_errors = {}
-        
-        # Set up caching if enabled
+        self.provider_errors: Dict[str, str] = {}
+        # Lazy-loaded models/clients
+        self._pyttsx3_engine: Optional[pyttsx3.Engine] = None
+        self._polly_client: Optional[Any] = None # boto3.client("polly")
+        self._silero_model: Optional[Any] = None # torch model
+        self._silero_speaker: str = settings.SILERO_SPEAKER
+        self._silero_sample_rate: int = 48000 # Common for Silero, adjust if specific model differs
+        self._coqui_tts_instance: Optional[CoquiTTS_API] = None
+
         if settings.ENABLE_CACHE:
-            self.cache = Cache(settings.CACHE_DIR, size_limit=1e9)  # 1GB limit
+            self.cache = Cache(settings.CACHE_DIR, tag_index=True, size_limit=int(1e9))
         else:
             self.cache = None
-        
+            
+        self.available_providers = self._initialize_and_verify_providers()
         if not self.available_providers:
-            logger.warning("No TTS providers are available. Check configuration.")
-    
-    def _initialize_providers(self) -> List[TTSProvider]:
-        """Initialize the available TTS providers."""
-        available = []
-        
-        # Check each provider
-        for provider in TTSProvider:
-            if settings.is_tts_provider_available(provider):
-                try:
-                    # Perform provider-specific initialization
-                    if provider == TTSProvider.PYTTSX3 and PYTTSX3_AVAILABLE:
-                        # Initialize pyttsx3 engine
-                        if not hasattr(self, '_pyttsx3_engine'):
-                            self._pyttsx3_engine = None  # Lazy loading
-                        available.append(provider)
-                    
-                    elif provider == TTSProvider.GTTS and GTTS_AVAILABLE:
-                        available.append(provider)
-                    
-                    elif provider == TTSProvider.EDGE and EDGE_TTS_AVAILABLE:
-                        available.append(provider)
-                    
-                    elif provider == TTSProvider.ELEVENLABS and ELEVENLABS_AVAILABLE:
-                        if settings.ELEVENLABS_API_KEY:
-                            set_api_key(settings.ELEVENLABS_API_KEY)
-                            available.append(provider)
-                    
-                    elif provider == TTSProvider.AMAZON_POLLY and AWS_POLLY_AVAILABLE:
-                        if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
-                            # Initialize boto3 client
-                            if not hasattr(self, '_polly_client'):
-                                self._polly_client = None  # Lazy loading
-                            available.append(provider)
-                    
-                    elif provider == TTSProvider.SILERO and SILERO_AVAILABLE:
-                        # Initialize Silero model
-                        if not hasattr(self, '_silero_model'):
-                            self._silero_model = None  # Lazy loading
-                        available.append(provider)
-                    
-                    elif provider == TTSProvider.COQUI and COQUI_AVAILABLE:
-                        # Initialize Coqui model
-                        if not hasattr(self, '_coqui_tts'):
-                            self._coqui_tts = None  # Lazy loading
-                        available.append(provider)
+            logger.critical("CRITICAL: No TTS providers are available/configured. TTS functionality will be severely limited or non-functional.")
+
+    def _initialize_and_verify_providers(self) -> List[TTSProvider]:
+        truly_available = []
+        sdk_availability_map = {
+            TTSProvider.PYTTSX3: PYTTSX3_AVAILABLE,
+            TTSProvider.GTTS: GTTS_AVAILABLE,
+            TTSProvider.EDGE: EDGE_TTS_AVAILABLE,
+            TTSProvider.ELEVENLABS: ELEVENLABS_AVAILABLE,
+            TTSProvider.AMAZON_POLLY: AWS_POLLY_AVAILABLE,
+            TTSProvider.SILERO: SILERO_AVAILABLE,
+            TTSProvider.COQUI: COQUI_AVAILABLE,
+        }
+        for provider_enum in TTSProvider:
+            is_configured = settings.is_tts_provider_available(provider_enum) # Checks config (keys, paths)
+            sdk_present = sdk_availability_map.get(provider_enum, False)
+
+            if is_configured and sdk_present:
+                can_add = True
+                # Further checks for API key based providers
+                if provider_enum == TTSProvider.ELEVENLABS and not settings.ELEVENLABS_API_KEY:
+                    logger.warning(f"{provider_enum.value}: Configured but ELEVENLABS_API_KEY missing.")
+                    can_add = False
+                elif provider_enum == TTSProvider.AMAZON_POLLY and not (settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY):
+                    logger.warning(f"{provider_enum.value}: Configured but AWS credentials missing.")
+                    can_add = False
                 
-                except Exception as e:
-                    logger.warning(f"Failed to initialize {provider}: {str(e)}")
-        
-        logger.info(f"Available TTS providers: {[p.value for p in available]}")
-        return available
-    
-    def _get_cache_key(self, text: str, voice: str) -> str:
-        """Generate a cache key for the TTS request."""
-        import hashlib
-        # Create a hash of the text and voice
-        return hashlib.md5(f"{text}:{voice}".encode()).hexdigest()
-    
-    async def _synthesize_pyttsx3(self, text: str, voice: Optional[str] = None, speed: float = 1.0) -> bytes:
-        """Synthesize speech using pyttsx3 (offline)."""
-        if not PYTTSX3_AVAILABLE:
-            raise ProviderError("pyttsx3", "pyttsx3 is not installed")
-        
-        try:
-            # Lazy load the engine
-            if not hasattr(self, '_pyttsx3_engine') or self._pyttsx3_engine is None:
-                logger.info("Initializing pyttsx3 engine...")
-                self._pyttsx3_engine = pyttsx3.init()
-            
-            # Set voice if specified
-            if voice:
-                voices = self._pyttsx3_engine.getProperty('voices')
-                voice_found = False
-                for v in voices:
-                    if voice.lower() in v.id.lower() or voice.lower() in v.name.lower():
-                        self._pyttsx3_engine.setProperty('voice', v.id)
-                        voice_found = True
-                        break
+                if can_add:
+                    if provider_enum == TTSProvider.ELEVENLABS: # Set API key early
+                        try: elevenlabs_set_api_key(settings.ELEVENLABS_API_KEY)
+                        except Exception as e: logger.error(f"Failed to set ElevenLabs API key: {e}"); can_add=False
+                    
+                    if provider_enum == TTSProvider.AMAZON_POLLY:
+                        try: # Initialize Polly client eagerly
+                            self._polly_client = boto3.client(
+                                'polly',
+                                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                                region_name=settings.AWS_REGION
+                            )
+                            logger.info("Amazon Polly client initialized.")
+                        except Exception as e: logger.error(f"Failed to init Polly client: {e}. Disabled."); can_add=False
                 
-                if not voice_found:
-                    logger.warning(f"Voice '{voice}' not found, using default voice")
-            
-            # Set speech rate
-            rate = self._pyttsx3_engine.getProperty('rate')
-            self._pyttsx3_engine.setProperty('rate', int(rate / speed))
-            
-            # Create a temporary file to save the audio
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                temp_path = temp_file.name
-            
-            # Save to file
-            self._pyttsx3_engine.save_to_file(text, temp_path)
-            
-            # Run in a thread pool to avoid blocking
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self._pyttsx3_engine.runAndWait)
-            
-            # Read the file and convert to MP3
-            with open(temp_path, "rb") as f:
-                wav_data = f.read()
-            
-            # Convert WAV to MP3 using pydub
-            audio = AudioSegment.from_wav(io.BytesIO(wav_data))
-            mp3_io = io.BytesIO()
-            audio.export(mp3_io, format="mp3")
-            mp3_data = mp3_io.getvalue()
-            
-            # Clean up temporary file
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
-            
-            return mp3_data
+                if can_add:
+                    truly_available.append(provider_enum)
+
+            elif is_configured and not sdk_present:
+                logger.warning(f"TTS Provider '{provider_enum.value}' configured but SDK/library missing. Unavailable.")
         
-        except Exception as e:
-            raise ProviderError("pyttsx3", str(e))
-    
-    async def _synthesize_gtts(self, text: str, voice: Optional[str] = None, speed: float = 1.0) -> bytes:
-        """Synthesize speech using Google Text-to-Speech."""
-        if not GTTS_AVAILABLE:
-            raise ProviderError("gTTS", "gTTS is not installed")
-        
+        logger.info(f"Final list of available TTS providers: {[p.value for p in truly_available]}")
+        return truly_available
+
+    def _get_cache_key(self, text: str, voice: Optional[str], speed: float, provider_val: str, lang: Optional[str]) -> str:
+        m = hashlib.md5()
+        m.update(text.encode())
+        if voice: m.update(voice.encode())
+        m.update(str(speed).encode())
+        m.update(provider_val.encode())
+        if lang: m.update(lang.encode())
+        return m.hexdigest()
+
+    async def _run_with_retry(self, provider_name_str: str, async_target_callable, *args):
+        retryer = AsyncRetrying(
+            stop=stop_after_attempt(settings.MAX_RETRIES),
+            wait=wait_exponential(multiplier=settings.RETRY_DELAY, min=1, max=10),
+            reraise=True,
+        )
         try:
-            # gTTS doesn't support voice selection, only language
-            lang = "en"
-            if voice:
-                # Extract language code from voice if possible
-                if len(voice) == 2:
-                    lang = voice
-                elif "-" in voice:
-                    lang = voice.split("-")[0]
-            
-            # Create gTTS object
-            tts = gTTS(text=text, lang=lang, slow=speed < 1.0)
-            
-            # Save to a temporary file
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_file:
-                temp_path = temp_file.name
-            
-            # Run in a thread pool to avoid blocking
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: tts.save(temp_path))
-            
-            # Read the file
-            with open(temp_path, "rb") as f:
-                mp3_data = f.read()
-            
-            # Clean up temporary file
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
-            
-            # Apply speed adjustment if needed (other than slow/normal)
-            if speed != 1.0 and not (speed < 1.0):
-                # Load audio and adjust speed
-                audio = AudioSegment.from_mp3(io.BytesIO(mp3_data))
-                # Speed up by using segment overlay technique
-                if speed > 1.0:
-                    audio = audio.speedup(playback_speed=speed)
-                # Export back to MP3
-                mp3_io = io.BytesIO()
-                audio.export(mp3_io, format="mp3")
-                mp3_data = mp3_io.getvalue()
-            
-            return mp3_data
-        
+            return await retryer.call(async_target_callable, *args)
+        except asyncio.TimeoutError as e_timeout:
+            msg = f"Request timed out after {settings.TIMEOUT}s (including retries)"
+            logger.warning(f"{provider_name_str}: {msg}")
+            raise ProviderError(provider_name_str, msg, e_timeout)
         except Exception as e:
-            raise ProviderError("gTTS", str(e))
-    
-    async def _synthesize_edge_tts(self, text: str, voice: Optional[str] = None, speed: float = 1.0) -> bytes:
-        """Synthesize speech using Microsoft Edge TTS."""
-        if not EDGE_TTS_AVAILABLE:
-            raise ProviderError("Edge TTS", "edge-tts is not installed")
+            msg = f"Failed after {settings.MAX_RETRIES} retries: {str(e)}"
+            logger.warning(f"{provider_name_str}: {msg} (Type: {type(e).__name__})")
+            raise ProviderError(provider_name_str, msg, e)
+
+    # --- Provider Specific Synthesis Methods ---
+    async def _synthesize_pyttsx3(self, text: str, voice: Optional[str], speed: float, lang: Optional[str]) -> bytes:
+        if not PYTTSX3_AVAILABLE: raise ProviderError(TTSProvider.PYTTSX3.value, "pyttsx3 SDK missing.")
+        if self._pyttsx3_engine is None:
+            logger.info("Initializing pyttsx3 engine...")
+            try: self._pyttsx3_engine = pyttsx3.init()
+            except Exception as e: raise ProviderError(TTSProvider.PYTTSX3.value, f"Engine init failed: {e}", e)
+
+        engine = self._pyttsx3_engine
+        if voice and voice != "default":
+            available_voices = engine.getProperty('voices')
+            chosen_voice = next((v for v in available_voices if voice.lower() in v.name.lower() or voice.lower() in v.id.lower()), None)
+            if chosen_voice: engine.setProperty('voice', chosen_voice.id)
+            else: logger.warning(f"pyttsx3: Voice '{voice}' not found. Using default.")
         
+        current_rate = engine.getProperty('rate') # Default is often 200
+        engine.setProperty('rate', int(current_rate * speed)) # pyttsx3 speed is words per minute
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_f:
+            wav_path = tmp_f.name
         try:
-            # Default voice if not specified
-            if not voice:
-                voice = "en-US-AriaNeural"
+            await asyncio.get_event_loop().run_in_executor(None, engine.save_to_file, text, wav_path)
+            await asyncio.get_event_loop().run_in_executor(None, engine.runAndWait) # Necessary to complete saving
             
-            # Create output buffer
-            output = io.BytesIO()
-            
-            # Format speed as a string percent
-            speed_str = f"{int(speed * 100)}%"
-            
-            # Communicate with Edge TTS
-            communicate = edge_tts.Communicate(text, voice, rate=speed_str)
-            
-            # Run in an async context
+            with open(wav_path, "rb") as f_wav: audio_bytes = f_wav.read()
+            # Convert WAV to MP3
+            audio_segment = AudioSegment.from_wav(io.BytesIO(audio_bytes))
+            mp3_bio = io.BytesIO()
+            audio_segment.export(mp3_bio, format="mp3")
+            return mp3_bio.getvalue()
+        finally:
+            if os.path.exists(wav_path): os.unlink(wav_path)
+
+    async def _synthesize_gtts(self, text: str, voice: Optional[str], speed: float, lang: Optional[str]) -> bytes:
+        if not GTTS_AVAILABLE: raise ProviderError(TTSProvider.GTTS.value, "gTTS SDK missing.")
+        # gTTS voice param is language. 'voice' here can be 'en', 'fr', etc.
+        # Or specific accent like 'en-uk', 'en-au'. gTTS handles this via `lang` and `tld`.
+        effective_lang = lang or (voice if voice and len(voice) <= 5 else "en") # Simple lang detection from voice
+        is_slow = speed < 0.85 # gTTS only has slow or normal
+
+        try:
+            tts_instance = gTTS(text=text, lang=effective_lang, slow=is_slow)
+            mp3_bio = io.BytesIO()
+            await asyncio.get_event_loop().run_in_executor(None, tts_instance.write_to_fp, mp3_bio)
+            mp3_bio.seek(0)
+            audio_bytes = mp3_bio.getvalue()
+
+            # If speed needs more granular control than gTTS slow/normal, use pydub
+            if not is_slow and speed != 1.0: # If not already slowed by gTTS and speed is not normal
+                audio_segment = AudioSegment.from_mp3(io.BytesIO(audio_bytes))
+                # Pydub speedup changes pitch. For TTS, changing frame_rate to simulate speed is more common
+                # but can sound unnatural. True speed change without pitch needs more complex DSP.
+                # For now, let's use pydub's speedup if available, or skip granular speed for gTTS.
+                # A simple frame rate change (less ideal):
+                # audio_segment = audio_segment._spawn(audio_segment.raw_data, overrides={
+                #    "frame_rate": int(audio_segment.frame_rate * speed)
+                # })
+                # Using speedup:
+                if speed > 1.0: audio_segment = audio_segment.speedup(playback_speed=speed, chunk_size=150, crossfade=75)
+                # Slowing down is harder with pydub without pitch issues.
+                # For now, only supporting speed > 1.0 adjustment for gTTS via pydub.
+                
+                final_bio = io.BytesIO()
+                audio_segment.export(final_bio, format="mp3")
+                audio_bytes = final_bio.getvalue()
+            return audio_bytes
+        except gTTSError as e_gtts:
+            raise ProviderError(TTSProvider.GTTS.value, f"gTTS API error: {e_gtts.msg}", e_gtts)
+        except Exception as e:
+            raise ProviderError(TTSProvider.GTTS.value, f"Synthesis failed: {e}", e)
+
+
+    async def _synthesize_edge_tts(self, text: str, voice: Optional[str], speed: float, lang: Optional[str]) -> bytes:
+        if not EDGE_TTS_AVAILABLE: raise ProviderError(TTSProvider.EDGE.value, "edge-tts SDK missing.")
+        
+        effective_voice = voice or "en-US-AriaNeural" # EdgeTTS default
+        # Edge TTS rate is like "+20%" or "-10%". Convert speed (0.25-4.0) to this.
+        # 1.0 speed = +0%.  2.0 speed = +100%. 0.5 speed = -50%.
+        rate_modifier = int((speed - 1.0) * 100)
+        rate_str = f"{rate_modifier:+}%" # Format with sign, e.g., "+20%", "-10%"
+
+        mp3_bio = io.BytesIO()
+        try:
+            communicate = edge_tts.Communicate(text, effective_voice, rate=rate_str)
+            # edge_tts.Communicate.stream() is an async generator
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
-                    output.write(chunk["data"])
-            
-            # Return the audio data
-            output.seek(0)
-            mp3_data = output.read()
-            
-            return mp3_data
+                    mp3_bio.write(chunk["data"])
+                elif chunk["type"] == "WordBoundary":
+                    pass # logger.debug(f"EdgeTTS Word: {chunk['text']}")
+            mp3_bio.seek(0)
+            return mp3_bio.getvalue()
+        except Exception as e: # Catch edge_tts specific errors if any, or general ones
+             raise ProviderError(TTSProvider.EDGE.value, f"Synthesis failed: {e}", e)
+
+
+    async def _synthesize_elevenlabs(self, text: str, voice: Optional[str], speed: float, lang: Optional[str]) -> bytes:
+        if not (ELEVENLABS_AVAILABLE and settings.ELEVENLABS_API_KEY): 
+            raise ProviderError(TTSProvider.ELEVENLABS.value, "ElevenLabs SDK/API Key missing.")
         
-        except Exception as e:
-            raise ProviderError("Edge TTS", str(e))
-    
-    async def _synthesize_elevenlabs(self, text: str, voice: Optional[str] = None, speed: float = 1.0) -> bytes:
-        """Synthesize speech using ElevenLabs."""
-        if not ELEVENLABS_AVAILABLE:
-            raise ProviderError("ElevenLabs", "ElevenLabs is not installed")
+        effective_voice_id = voice or settings.ELEVENLABS_VOICE_ID or "Rachel" # Default if nothing else
         
+        # ElevenLabs speed is 'stability' and 'similarity_boost' more than direct speed.
+        # We can use stability for a proxy if speed is very low or high.
+        # stability (0 to 1). Lower stability = more variable, higher = more monotonous.
+        # similarity_boost (0 to 1).
+        # For simplicity, direct speed mapping isn't clean. We'll use defaults.
+        # If speed param is crucial, SSML <prosody rate="..."> might be an option if supported.
+        # For now, not mapping 'speed' directly to ElevenLabs parameters.
+        logger.debug(f"ElevenLabs speed param ({speed}) not directly mapped. Using default voice settings.")
+
         try:
-            # Use specified voice or default from settings
-            voice_id = voice or settings.ELEVENLABS_VOICE_ID
-            if not voice_id:
-                raise ProviderError("ElevenLabs", "No voice ID specified")
-            
-            # Run in a thread pool to avoid blocking
-            loop = asyncio.get_event_loop()
-            audio_data = await loop.run_in_executor(
-                None,
-                lambda: generate(
+            # elevenlabs_generate is synchronous
+            audio_bytes = await asyncio.get_event_loop().run_in_executor(
+                None, 
+                lambda: elevenlabs_generate(
                     text=text,
-                    voice=voice_id,
-                    model="eleven_monolingual_v1"
+                    voice=ElevenLabsVoice(
+                        voice_id=effective_voice_id,
+                        # Optionally define settings here if voice object doesn't have them
+                        # settings=ElevenLabsVoiceSettings(stability=0.75, similarity_boost=0.75) 
+                    ),
+                    model="eleven_multilingual_v2" # Or other suitable model
                 )
             )
-            
-            # ElevenLabs returns MP3 data directly
-            return audio_data
-        
+            if not isinstance(audio_bytes, bytes): # generate can return an iterator
+                accumulated_bytes = bytearray()
+                for chunk in audio_bytes: accumulated_bytes.extend(chunk)
+                audio_bytes = bytes(accumulated_bytes)
+            return audio_bytes
         except Exception as e:
-            raise ProviderError("ElevenLabs", str(e))
-    
-    async def _synthesize_amazon_polly(self, text: str, voice: Optional[str] = None, speed: float = 1.0) -> bytes:
-        """Synthesize speech using Amazon Polly."""
-        if not AWS_POLLY_AVAILABLE:
-            raise ProviderError("Amazon Polly", "boto3 is not installed")
+            raise ProviderError(TTSProvider.ELEVENLABS.value, f"API call failed: {e}", e)
+
+
+    async def _synthesize_amazon_polly(self, text: str, voice: Optional[str], speed: float, lang: Optional[str]) -> bytes:
+        if not (AWS_POLLY_AVAILABLE and self._polly_client): 
+            raise ProviderError(TTSProvider.AMAZON_POLLY.value, "Polly SDK/Client missing or not init.")
+
+        effective_voice_id = voice or settings.POLLY_VOICE_ID
+        # Polly uses SSML for speed. <prosody rate="x-slow|slow|medium|fast|x-fast|N%">
+        # Mapping our float speed (0.25-4.0) to Polly's percentage (approx 25% to 400%)
+        polly_rate_percent = int(speed * 100)
+        
+        # Ensure rate is within Polly's typical useful range (e.g. 20% to 200% for naturalness)
+        polly_rate_percent_clamped = max(20, min(polly_rate_percent, 200)) 
+        
+        ssml_text = f'<speak><prosody rate="{polly_rate_percent_clamped}%">{text}</prosody></speak>'
         
         try:
-            # Lazy load the client
-            if not hasattr(self, '_polly_client') or self._polly_client is None:
-                logger.info("Initializing Amazon Polly client...")
-                self._polly_client = boto3.client(
-                    'polly',
-                    aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-                    aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-                    region_name=settings.AWS_REGION
-                )
-            
-            # Use specified voice or default from settings
-            voice_id = voice or settings.POLLY_VOICE_ID
-            
-            # Add SSML for speed adjustment if needed
-            if speed != 1.0:
-                text = f'<speak><prosody rate="{int(speed * 100)}%">{text}</prosody></speak>'
-                text_type = "ssml"
-            else:
-                text_type = "text"
-            
-            # Run in a thread pool to avoid blocking
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
+            response = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self._polly_client.synthesize_speech(
-                    Text=text,
-                    TextType=text_type,
+                    Text=ssml_text,
+                    TextType="ssml",
                     OutputFormat="mp3",
-                    VoiceId=voice_id,
-                    Engine="neural"
+                    VoiceId=effective_voice_id,
+                    LanguageCode=lang, # Optional, Polly infers from voice often
+                    Engine="neural" # Or "standard"
                 )
             )
-            
-            # Extract audio data
             if "AudioStream" in response:
-                audio_stream = response["AudioStream"]
-                audio_data = audio_stream.read()
-                return audio_data
-            else:
-                raise ProviderError("Amazon Polly", "No audio data in response")
-        
+                # The stream needs to be read. Boto3 HttpBody is a stream.
+                audio_stream = response['AudioStream']
+                audio_bytes = audio_stream.read()
+                audio_stream.close()
+                return audio_bytes
+            raise ProviderError(TTSProvider.AMAZON_POLLY.value, "No AudioStream in Polly response.")
         except Exception as e:
-            raise ProviderError("Amazon Polly", str(e))
-    
-    async def _synthesize_silero(self, text: str, voice: Optional[str] = None, speed: float = 1.0) -> bytes:
-        """Synthesize speech using Silero TTS (offline)."""
-        if not SILERO_AVAILABLE:
-            raise ProviderError("Silero", "PyTorch is not installed")
+            raise ProviderError(TTSProvider.AMAZON_POLLY.value, f"API call failed: {e}", e)
+
+    async def _synthesize_silero(self, text: str, voice: Optional[str], speed: float, lang: Optional[str]) -> bytes:
+        if not SILERO_AVAILABLE: raise ProviderError(TTSProvider.SILERO.value, "Silero (torch) SDK missing.")
+        if self._silero_model is None:
+            logger.info("Loading Silero TTS model...")
+            # Silero V3/V4 models recommend specific sample rates
+            # For V3, common sample rates are 8kHz, 24kHz, 48kHz. Let's use 48kHz for quality.
+            self._silero_sample_rate = 48000 
+            model_name = "v3_en" # Example V3 English model
+            # Silero models typically are just `model.pt`
+            silero_model_file = Path(settings.SILERO_MODEL_PATH) / f"{model_name}.pt"
+            try:
+                if silero_model_file.exists():
+                    self._silero_model = torch.package.PackageImporter(str(silero_model_file)).load_pickle("tts_models", "model")
+                else: # Fallback to torch.hub
+                    logger.info(f"Local Silero model {silero_model_file} not found, trying torch.hub an 'en' model")
+                    # This part needs internet and might download a large model on first run.
+                    self._silero_model, _ = await asyncio.get_event_loop().run_in_executor(
+                         None, lambda: torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_tts', language=lang or settings.SILERO_LANGUAGE, speaker=settings.SILERO_SPEAKER_V3_IDS[0])) # Default to first available v3 speaker
+                # Assuming model is a new Silero format that takes **kwargs
+                # self._silero_model.to(torch.device('cpu')) # Ensure CPU if GPU not intended/available
+            except Exception as e: raise ProviderError(TTSProvider.SILERO.value, f"Silero model load failed: {e}", e)
+
+        effective_speaker = voice or settings.SILERO_SPEAKER # e.g. "en_0", "random"
         
-        try:
-            # Lazy load the model
-            if not hasattr(self, '_silero_model') or self._silero_model is None:
-                logger.info("Loading Silero TTS model...")
-                
-                # Check if custom model path exists
-                if settings.SILERO_MODEL_PATH and Path(settings.SILERO_MODEL_PATH).exists():
-                    model_path = settings.SILERO_MODEL_PATH
-                    custom_model = True
-                else:
-                    # Download model from torch hub
-                    model_path = "silero_tts"
-                    custom_model = False
-                
-                # Load the model
-                if custom_model:
-                    self._silero_model = torch.jit.load(model_path)
-                else:
-                    self._silero_model, _ = torch.hub.load(
-                        repo_or_dir="snakers4/silero-models",
-                        model="silero_tts",
-                        language=settings.SILERO_LANGUAGE,
-                        speaker=settings.SILERO_SPEAKER
-                    )
-            
-            # Use specified voice or default from settings
-            speaker = voice or settings.SILERO_SPEAKER
-            
-            # Create a temporary file to save the audio
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                temp_path = temp_file.name
-            
-            # Run in a thread pool to avoid blocking
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self._silero_model.save_wav(
-                    text=text,
-                    speaker=speaker,
-                    sample_rate=settings.SAMPLE_RATE,
-                    audio_path=temp_path
-                )
+        # Silero `apply_tts` has `speed` parameter (float, 1.0 is normal)
+        # For older models, it might be sample_rate adjustment.
+        # Newer models `save_wav` or `apply_tts` may have speed/rate directly.
+        # Assuming `apply_tts` exists and handles it, or we post-process.
+        
+        audio_tensor = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: self._silero_model.apply_tts(
+                text=text,
+                speaker=effective_speaker,
+                sample_rate=self._silero_sample_rate,
+                # put_accent=True, put_yo=True, # Example extra params for some models
+                speed=speed # Pass speed directly if model supports it
             )
-            
-            # Read the file and convert to MP3
-            with open(temp_path, "rb") as f:
-                wav_data = f.read()
-            
-            # Convert WAV to MP3 using pydub
-            audio = AudioSegment.from_wav(io.BytesIO(wav_data))
-            
-            # Apply speed adjustment if needed
-            if speed != 1.0:
-                # Speed up or slow down
-                if speed > 1.0:
-                    audio = audio.speedup(playback_speed=speed)
-                else:
-                    # This is a simple way to slow down, not ideal
-                    audio = audio._spawn(audio.raw_data, overrides={
-                        "frame_rate": int(audio.frame_rate * speed)
-                    }).set_frame_rate(audio.frame_rate)
-            
-            # Export to MP3
-            mp3_io = io.BytesIO()
-            audio.export(mp3_io, format="mp3")
-            mp3_data = mp3_io.getvalue()
-            
-            # Clean up temporary file
+        )
+        # audio_tensor is a 1D torch tensor. Convert to WAV bytes then MP3.
+        wav_bio = io.BytesIO()
+        # torchaudio.save needs torchaudio. torchaudio.save(wav_bio, audio_tensor.unsqueeze(0).cpu(), self._silero_sample_rate, format="wav")
+        # Simpler: convert tensor to numpy, then to AudioSegment
+        audio_np = audio_tensor.numpy()
+        # Scale to int16 if it's float -1 to 1
+        if audio_np.dtype == np.float32 or audio_np.dtype == np.float64:
+            audio_np = (audio_np * 32767).astype(np.int16)
+        
+        audio_segment = AudioSegment(data=audio_np.tobytes(), sample_width=2, frame_rate=self._silero_sample_rate, channels=1)
+        mp3_bio = io.BytesIO()
+        audio_segment.export(mp3_bio, format="mp3")
+        return mp3_bio.getvalue()
+
+
+    async def _synthesize_coqui(self, text: str, voice: Optional[str], speed: float, lang: Optional[str]) -> bytes:
+        if not COQUI_AVAILABLE: raise ProviderError(TTSProvider.COQUI.value, "Coqui TTS SDK missing.")
+        if self._coqui_tts_instance is None:
+            logger.info(f"Loading Coqui TTS model: {settings.COQUI_MODEL_PATH or settings.COQUI_DEFAULT_MODEL_NAME}")
+            model_source = settings.COQUI_MODEL_PATH if settings.COQUI_MODEL_PATH and Path(settings.COQUI_MODEL_PATH).exists() else settings.COQUI_DEFAULT_MODEL_NAME
             try:
-                os.unlink(temp_path)
-            except:
-                pass
-            
-            return mp3_data
+                # Coqui TTS API can take model_path or model_name
+                if Path(model_source).is_dir() or Path(model_source).is_file() : # is local path
+                    self._coqui_tts_instance = CoquiTTS_API(model_path=model_source, progress_bar=False)
+                else: # is model name from their list
+                    self._coqui_tts_instance = CoquiTTS_API(model_name=model_source, progress_bar=False)
+            except Exception as e: raise ProviderError(TTSProvider.COQUI.value, f"Coqui model load failed ({model_source}): {e}", e)
         
-        except Exception as e:
-            raise ProviderError("Silero", str(e))
-    
-    async def _synthesize_coqui(self, text: str, voice: Optional[str] = None, speed: float = 1.0) -> bytes:
-        """Synthesize speech using Coqui TTS (offline)."""
-        if not COQUI_AVAILABLE:
-            raise ProviderError("Coqui", "Coqui TTS is not installed")
+        # Coqui tts_to_file or tts method. `tts` returns a list of int samples (PCM).
+        # Speaker can be by ID, path to speaker embedding, or None for default.
+        # Speed is not a direct param for coqui `tts` method. Post-processing needed.
+        speaker_arg = voice if voice and voice != "default" else None # Use default if not specified
+        language_arg = lang if lang else None # Coqui models are often language-specific
+
+        wav_samples_list = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: self._coqui_tts_instance.tts(text=text, speaker=speaker_arg, language=language_arg)
+        )
+        # wav_samples_list is List[int] usually. Convert to numpy int16 array.
+        wav_np = np.array(wav_samples_list, dtype=np.int16)
         
-        try:
-            # Lazy load the model
-            if not hasattr(self, '_coqui_tts') or self._coqui_tts is None:
-                logger.info("Loading Coqui TTS model...")
-                
-                # Check if custom model path exists
-                if settings.COQUI_MODEL_PATH and Path(settings.COQUI_MODEL_PATH).exists():
-                    model_path = settings.COQUI_MODEL_PATH
-                    self._coqui_tts = CoquiTTS(model_path=model_path)
-                else:
-                    # Use built-in model
-                    self._coqui_tts = CoquiTTS(model_name="tts_models/en/ljspeech/tacotron2-DDC")
-            
-            # Create a temporary file to save the audio
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                temp_path = temp_file.name
-            
-            # Run in a thread pool to avoid blocking
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self._coqui_tts.tts_to_file(
-                    text=text,
-                    file_path=temp_path,
-                    speaker=voice if voice else None
+        # Coqui models have their own sample rate, get it from the model
+        coqui_sr = self._coqui_tts_instance.synthesizer.output_sample_rate if self._coqui_tts_instance.synthesizer else 22050 # Default fallback
+
+        audio_segment = AudioSegment(data=wav_np.tobytes(), sample_width=2, frame_rate=coqui_sr, channels=1)
+
+        # Apply speed adjustment if needed (post-processing)
+        if speed != 1.0:
+            logger.debug(f"Coqui: Applying speed {speed} post-synthesis.")
+            # This basic speed change affects pitch.
+            # audio_segment = audio_segment._spawn(audio_segment.raw_data, overrides={"frame_rate": int(coqui_sr * speed)})
+            if speed > 1.0: audio_segment = audio_segment.speedup(playback_speed=speed, chunk_size=150, crossfade=75)
+            # Slowdown is harder.
+        
+        mp3_bio = io.BytesIO()
+        audio_segment.export(mp3_bio, format="mp3")
+        return mp3_bio.getvalue()
+
+
+    async def _dispatch_synthesize(self, provider: TTSProvider, text: str, voice: Optional[str], speed: float, lang: Optional[str]) -> bytes:
+        dispatch_map = {
+            TTSProvider.PYTTSX3: self._synthesize_pyttsx3,
+            TTSProvider.GTTS: self._synthesize_gtts,
+            TTSProvider.EDGE: self._synthesize_edge_tts,
+            TTSProvider.ELEVENLABS: self._synthesize_elevenlabs,
+            TTSProvider.AMAZON_POLLY: self._synthesize_amazon_polly,
+            TTSProvider.SILERO: self._synthesize_silero,
+            TTSProvider.COQUI: self._synthesize_coqui,
+        }
+        if provider in dispatch_map:
+            return await dispatch_map[provider](text, voice, speed, lang)
+        raise ProviderError(provider.value, "Provider synthesis logic not implemented.")
+
+    async def synthesize(self, text: str, voice: Optional[str] = None, speed: float = 1.0, 
+                       provider_preference: Optional[TTSProvider] = None, language: Optional[str] = None) -> bytes:
+        self.provider_errors.clear()
+        
+        effective_provider_for_cache = provider_preference if provider_preference else settings.DEFAULT_TTS_PROVIDER
+        cache_key = self._get_cache_key(text, voice, speed, effective_provider_for_cache.value, language)
+        
+        if self.cache:
+            cached_audio = self.cache.get(cache_key)
+            if cached_audio: logger.debug(f"Cache hit TTS key {cache_key[:10]}..."); return cached_audio
+
+        providers_to_try = self._get_provider_attempt_order(provider_preference)
+        if not providers_to_try: raise TTSError("No TTS providers available.")
+
+        logger.info(f"TTS: Order={[p.value for p in providers_to_try]}. Text: '{text[:30]}...'. Voice: {voice}, Speed: {speed}")
+
+        for current_provider in providers_to_try:
+            try:
+                logger.info(f"TTS: Attempting provider: {current_provider.value}")
+                # Retry logic applied by _run_with_retry wrapper on the _dispatch_synthesize call
+                # This means self._dispatch_synthesize is the 'async_target_callable'
+                audio_bytes = await self._run_with_retry(
+                    current_provider.value, 
+                    self._dispatch_synthesize, 
+                    current_provider, text, voice, speed, language
                 )
-            )
+
+                if audio_bytes:
+                    if self.cache: self.cache.set(cache_key, audio_bytes, expire=settings.CACHE_TTL, tag=current_provider.value)
+                    logger.info(f"TTS: Synthesized with {current_provider.value}. Output bytes: {len(audio_bytes)}")
+                    return audio_bytes
+                else: # Should not happen if _dispatch_synthesize raises ProviderError on empty audio
+                    msg = "Provider returned no audio data."
+                    logger.warning(f"{current_provider.value}: {msg}")
+                    self.provider_errors[current_provider.value] = msg
             
-            # Read the file and convert to MP3
-            with open(temp_path, "rb") as f:
-                wav_data = f.read()
-            
-            # Convert WAV to MP3 using pydub
-            audio = AudioSegment.from_wav(io.BytesIO(wav_data))
-            
-            # Apply speed adjustment if needed
-            if speed != 1.0:
-                # Speed up or slow down
-                if speed > 1.0:
-                    audio = audio.speedup(playback_speed=speed)
-                else:
-                    # This is a simple way to slow down, not ideal
-                    audio = audio._spawn(audio.raw_data, overrides={
-                        "frame_rate": int(audio.frame_rate * speed)
-                    }).set_frame_rate(audio.frame_rate)
-            
-            # Export to MP3
-            mp3_io = io.BytesIO()
-            audio.export(mp3_io, format="mp3")
-            mp3_data = mp3_io.getvalue()
-            
-            # Clean up temporary file
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
-            
-            return mp3_data
+            except ProviderError as e_p: self.provider_errors[e_p.provider] = e_p.message; logger.warning(str(e_p))
+            except Exception as e_unexp: logger.error(f"TTS: Unexpected error with {current_provider.value}: {e_unexp}", exc_info=True); self.provider_errors[current_provider.value] = f"Unexpected: {str(e_unexp)}"
         
-        except Exception as e:
-            raise ProviderError("Coqui", str(e))
-    
-    @retry(
-        retry=retry_if_exception_type(ProviderError),
-        stop=stop_after_attempt(settings.MAX_RETRIES),
-        wait=wait_exponential(multiplier=settings.RETRY_DELAY, min=settings.RETRY_DELAY, max=10),
-        reraise=True
-    )
-    async def synthesize(self, text: str, voice: Optional[str] = None, speed: float = 1.0, provider: Optional[TTSProvider] = None) -> bytes:
-        """
-        Synthesize speech from text using the specified or default provider.
-        Falls back to other providers if the specified provider fails.
-        
-        Args:
-            text: Text to synthesize
-            voice: Optional voice name or ID
-            speed: Speed factor (1.0 is normal speed)
-            provider: Optional specific provider to use
-            
-        Returns:
-            Audio data as bytes (MP3 format)
-            
-        Raises:
-            TTSError: If all providers fail
-        """
-        # Reset provider errors
-        self.provider_errors = {}
-        
-        # Check the cache first if enabled
-        if settings.ENABLE_CACHE and self.cache:
-            cache_key = self._get_cache_key(text, voice or "default")
-            cached_result = self.cache.get(cache_key)
-            if cached_result:
-                logger.debug("Using cached TTS result")
-                return cached_result
-        
-        # Determine which providers to try
-        providers_to_try = []
-        
-        if provider and provider in self.available_providers:
-            # If a specific provider is requested and available, try it first
-            providers_to_try.append(provider)
-        
-        # Then add the default provider if it's not already in the list
-        if settings.DEFAULT_TTS_PROVIDER in self.available_providers and settings.DEFAULT_TTS_PROVIDER not in providers_to_try:
-            providers_to_try.append(settings.DEFAULT_TTS_PROVIDER)
-        
-        # Then add fallback providers if they're not already in the list
-        for fallback in settings.FALLBACK_TTS_PROVIDERS:
-            if fallback in self.available_providers and fallback not in providers_to_try:
-                providers_to_try.append(fallback)
-        
-        # Finally, add any other available providers not already in the list
-        for available in self.available_providers:
-            if available not in providers_to_try:
-                providers_to_try.append(available)
-        
-        # If no providers are available, raise an error
-        if not providers_to_try:
-            raise TTSError("No TTS providers are available. Check configuration.")
-        
-        # Try each provider in order
-        for provider in providers_to_try:
-            try:
-                if provider == TTSProvider.PYTTSX3:
-                    audio_data = await self._synthesize_pyttsx3(text, voice, speed)
-                elif provider == TTSProvider.GTTS:
-                    audio_data = await self._synthesize_gtts(text, voice, speed)
-                elif provider == TTSProvider.EDGE:
-                    audio_data = await self._synthesize_edge_tts(text, voice, speed)
-                elif provider == TTSProvider.ELEVENLABS:
-                    audio_data = await self._synthesize_elevenlabs(text, voice, speed)
-                elif provider == TTSProvider.AMAZON_POLLY:
-                    audio_data = await self._synthesize_amazon_polly(text, voice, speed)
-                elif provider == TTSProvider.SILERO:
-                    audio_data = await self._synthesize_silero(text, voice, speed)
-                elif provider == TTSProvider.COQUI:
-                    audio_data = await self._synthesize_coqui(text, voice, speed)
-                else:
-                    # Skip unsupported providers
-                    logger.warning(f"Unsupported provider: {provider}")
-                    continue
-                
-                # If we got a result, cache it and return
-                if audio_data:
-                    # Cache the result if enabled
-                    if settings.ENABLE_CACHE and self.cache:
-                        cache_key = self._get_cache_key(text, voice or "default")
-                        self.cache.set(cache_key, audio_data, expire=settings.CACHE_TTL)
-                    
-                    return audio_data
-                else:
-                    # If no audio was returned, log and try the next provider
-                    logger.warning(f"Provider {provider} returned no audio")
-                    self.provider_errors[provider.value] = "No audio returned"
-                    continue
-            
-            except ProviderError as e:
-                # Log the error and continue to the next provider
-                logger.warning(f"Provider {provider} failed: {str(e)}")
-                self.provider_errors[provider.value] = str(e)
-                continue
-        
-        # If we've tried all providers and all have failed, raise an error
         raise AllProvidersFailedError(self.provider_errors)
-    
-    def get_provider_errors(self) -> Dict[str, str]:
-        """Get the errors that occurred for each provider."""
-        return self.provider_errors
+
+    def _get_provider_attempt_order(self, preference: Optional[TTSProvider]) -> List[TTSProvider]:
+        order: List[TTSProvider] = []
+        def add_to_order(p: TTSProvider):
+            if p in self.available_providers and p not in order: order.append(p)
+        
+        if preference: add_to_order(preference)
+        add_to_order(settings.DEFAULT_TTS_PROVIDER)
+        for fb_p in settings.FALLBACK_TTS_PROVIDERS: add_to_order(fb_p)
+        for avail_p in self.available_providers: add_to_order(avail_p)
+        return order
 
 
-# Create a singleton instance
-_multi_tts_client = None
-
+_tts_client_instance: Optional[MultiTTSClient] = None
 def get_multi_tts_client() -> MultiTTSClient:
-    """Get the multi-TTS client singleton instance."""
-    global _multi_tts_client
-    if _multi_tts_client is None:
-        _multi_tts_client = MultiTTSClient()
-    return _multi_tts_client
+    global _tts_client_instance
+    if _tts_client_instance is None: _tts_client_instance = MultiTTSClient()
+    return _tts_client_instance
 
-
-async def synthesize(text: str, voice: Optional[str] = None, speed: float = 1.0, provider: Optional[TTSProvider] = None) -> bytes:
-    """
-    Synthesize speech from text using the multi-TTS client.
-    
-    Args:
-        text: Text to synthesize
-        voice: Optional voice name or ID
-        speed: Speed factor (1.0 is normal speed)
-        provider: Optional specific provider to use
-        
-    Returns:
-        Audio data as bytes (MP3 format)
-        
-    Raises:
-        TTSError: If an error occurs in synthesis
-    """
+async def synthesize(text: str, voice: Optional[str] = None, speed: float = 1.0, 
+                     provider_preference: Optional[TTSProvider] = None, language: Optional[str] = None) -> bytes:
     client = get_multi_tts_client()
-    return await client.synthesize(text, voice, speed, provider)
+    return await client.synthesize(text, voice, speed, provider_preference, language)

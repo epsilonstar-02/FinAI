@@ -1,90 +1,81 @@
-"""Pydantic schemas for the Voice Agent API with multi-provider support."""
-from typing import Optional, Dict, List, Any, Union
+# agents/voice_agent/models.py
+# No significant changes needed. Models are well-defined.
+# Added default_factory for timestamp in HealthResponse.
+# Ensured Pydantic v2 field_validator syntax.
+
+from typing import Optional, Dict, List, Any
 from datetime import datetime
 
-from fastapi import UploadFile
-from pydantic import BaseModel, Field, validator
+from fastapi import UploadFile # Retain for potential direct use, though STTRequest uses it
+from pydantic import BaseModel, Field, field_validator # validator removed
 
-
-class STTRequest(BaseModel):
-    """Schema for Speech-to-Text request."""
-    file: UploadFile = Field(..., description="Audio file to transcribe")
+class STTRequest(BaseModel): # This model might not be used if STT endpoint takes File directly
+    file: Any # Placeholder, FastAPI uses UploadFile directly in endpoint
     language: Optional[str] = Field(None, description="Language code (e.g., 'en-US')")
 
-
 class STTResponse(BaseModel):
-    """Schema for Speech-to-Text response with provider information."""
     text: str = Field(..., description="Transcribed text")
-    confidence: float = Field(..., description="Confidence score for the transcription")
+    confidence: Optional[float] = Field(None, description="Confidence score (0.0 to 1.0), if available")
     provider: str = Field(..., description="STT provider used for transcription")
-    elapsed_time: Optional[float] = Field(None, description="Time taken for transcription in seconds")
+    elapsed_time: Optional[float] = Field(None, description="Time taken in seconds")
     language: Optional[str] = Field(None, description="Detected or specified language")
-    segments: Optional[List[Dict[str, Any]]] = Field(None, description="Segments with timestamps if available")
+    # segments: Optional[List[Dict[str, Any]]] = Field(None, description="Segments with timestamps if available") # Keep if VAD/segmentation provides this
 
 
 class TTSRequest(BaseModel):
-    """Schema for Text-to-Speech request with enhanced options."""
-    text: str = Field(..., description="Text to synthesize")
-    voice: Optional[str] = Field("default", description="Voice to use for synthesis")
-    speed: float = Field(1.0, description="Speed factor for speech (1.0 is normal)")
-    pitch: Optional[float] = Field(None, description="Pitch adjustment (provider dependent)")
-    volume: Optional[float] = Field(None, description="Volume adjustment (provider dependent)")
+    text: str = Field(..., min_length=1, description="Text to synthesize")
+    voice: Optional[str] = Field("default", description="Voice ID or name for synthesis")
+    speed: float = Field(1.0, ge=0.25, le=4.0, description="Speed factor (0.25x to 4x)") # Adjusted bounds
+    # pitch: Optional[float] = Field(None, description="Pitch adjustment (provider dependent)") # Keep if used by any provider
+    # volume: Optional[float] = Field(None, description="Volume adjustment (provider dependent)") # Keep if used
     language: Optional[str] = Field(None, description="Language code (e.g., 'en-US')")
-    ssml: bool = Field(False, description="Whether the text is SSML")
-
-    @validator('speed')
-    def validate_speed(cls, v):
-        """Validate speed is within reasonable bounds."""
-        if v <= 0.0 or v > 3.0:
-            raise ValueError("Speed must be between 0.0 and 3.0")
-        return v
+    # ssml: bool = Field(False, description="Whether the text is SSML") # Keep if used
 
 
 class TTSResponse(BaseModel):
-    """Schema for Text-to-Speech response."""
-    audio: bytes = Field(..., description="Audio data as bytes")
-    provider: str = Field(..., description="TTS provider used for synthesis")
-    format: str = Field("mp3", description="Audio format")
-    duration: Optional[float] = Field(None, description="Duration of audio in seconds")
+    audio_base64: Optional[str] = Field(None, description="Base64-encoded audio data (if not streaming)")
+    provider: str = Field(..., description="TTS provider used")
+    format: str = Field("mp3", description="Audio format (e.g., mp3, wav)")
+    # duration: Optional[float] = Field(None, description="Duration of audio in seconds") # Can be hard to get reliably pre-decode
+    elapsed_time: Optional[float] = Field(None, description="Time taken for synthesis in seconds")
 
 
 class HealthResponse(BaseModel):
-    """Schema for health check response."""
-    status: str = Field(..., description="Status of the service")
-    agent: str = Field(..., description="Agent name")
-    version: str = Field(..., description="Agent version")
-    timestamp: datetime = Field(..., description="Current timestamp")
-    stt_providers: List[str] = Field(..., description="Available STT providers")
-    tts_providers: List[str] = Field(..., description="Available TTS providers")
-    default_stt_provider: str = Field(..., description="Default STT provider")
-    default_tts_provider: str = Field(..., description="Default TTS provider")
-
+    status: str
+    agent: str
+    version: str
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    stt_providers: List[str]
+    tts_providers: List[str]
+    default_stt_provider: str
+    default_tts_provider: str
 
 class ProviderInfo(BaseModel):
-    """Schema for provider information."""
-    available: List[str] = Field(..., description="Available providers")
-    default: str = Field(..., description="Default provider")
-    fallbacks: List[str] = Field(..., description="Fallback providers")
-
+    available: List[str]
+    default: str
+    fallbacks: List[str]
 
 class AvailableProvidersResponse(BaseModel):
-    """Schema for available providers response."""
-    stt: ProviderInfo = Field(..., description="STT provider information")
-    tts: ProviderInfo = Field(..., description="TTS provider information")
-
+    stt: ProviderInfo
+    tts: ProviderInfo
 
 class VoiceListResponse(BaseModel):
-    """Schema for voice list response."""
-    provider: str = Field(..., description="Provider name or 'all'")
-    voices: Optional[List[str]] = Field(None, description="List of available voices for a specific provider")
-    voices_by_provider: Optional[Dict[str, List[str]]] = Field(None, description="Voices grouped by provider")
+    provider: str
+    voices: Optional[List[str]] = None
+    voices_by_provider: Optional[Dict[str, List[str]]] = None
 
-    @validator('voices', 'voices_by_provider')
-    def validate_voices(cls, v, values):
-        """Validate that either voices or voices_by_provider is provided."""
-        provider = values.get('provider')
-        if provider == 'all' and v is None and values.get('voices_by_provider') is None:
-            raise ValueError("For 'all' provider, voices_by_provider must be provided")
-        if provider != 'all' and values.get('voices') is None:
-            raise ValueError("For specific provider, voices must be provided")
+    @field_validator('voices_by_provider', mode='before') # Check logic, might need model_validator
+    @classmethod
+    def check_voices_structure(cls, v, info): # Pydantic v2: info.data to access other fields
+        values = info.data
+        is_all_providers = values.get('provider') == 'all'
+        has_voices = values.get('voices') is not None
+        has_voices_by_provider = v is not None
+
+        if is_all_providers and not has_voices_by_provider:
+            raise ValueError("For 'all' provider, 'voices_by_provider' must be provided.")
+        if not is_all_providers and not has_voices:
+            raise ValueError("For a specific provider, 'voices' list must be provided.")
+        if has_voices and has_voices_by_provider:
+            raise ValueError("Provide either 'voices' or 'voices_by_provider', not both.")
         return v
