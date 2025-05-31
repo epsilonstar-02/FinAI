@@ -1,8 +1,0 @@
-# Analysis Agent specialized dependencies
-# Note: Core dependencies are already in the main requirements.txt file
-
-# The following dependencies are needed specifically for the Analysis Agent
-# If you're installing just this agent, use:
-# pip install -r requirements.txt -r agents/analysis_agent/requirements-analysis.txt
-
-# No additional dependencies are needed beyond what's in the main requirements.txt

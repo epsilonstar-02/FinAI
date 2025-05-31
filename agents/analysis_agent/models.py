@@ -1,112 +1,104 @@
-"""Models for the Analysis Agent."""
+# agents/analysis_agent/models.py
+# Use field_validator for Pydantic v2.
+# Add model_config to relevant models.
+
 from typing import Dict, List, Optional, Any
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator # validator removed
+from datetime import datetime # Added for potential use in future metadata
 
 class HistoricalDataPoint(BaseModel):
-    """Model for a single historical data point."""
-    date: str = Field(..., description="Date in ISO format (YYYY-MM-DD)")
-    close: float = Field(..., description="Closing price")
-    open: Optional[float] = Field(None, description="Opening price")
-    high: Optional[float] = Field(None, description="High price")
-    low: Optional[float] = Field(None, description="Low price")
-    volume: Optional[int] = Field(None, description="Trading volume")
+    date: str = Field(..., description="Date in ISO format (YYYY-MM-DD)") # Could be pydantic.AwareDatetime or date
+    close: float = Field(..., description="Closing price", gt=0) # Price should be > 0
+    open: Optional[float] = Field(None, description="Opening price", gt=0)
+    high: Optional[float] = Field(None, description="High price", gt=0)
+    low: Optional[float] = Field(None, description="Low price", gt=0)
+    volume: Optional[int] = Field(None, description="Trading volume", ge=0) # Volume >= 0
+
+    # model_config can be added for alias_generator or other settings if needed
+    model_config = {"extra": "allow"} # Allow extra fields if API returns more
+
+    @field_validator('high')
+    @classmethod
+    def high_gte_low(cls, v: Optional[float], info) -> Optional[float]:
+        # Pydantic v2: info.data contains validated fields so far
+        low_price = info.data.get('low')
+        if v is not None and low_price is not None and v < low_price:
+            raise ValueError('High price must be greater than or equal to low price')
+        return v
+
+    @field_validator('low')
+    @classmethod
+    def low_lte_others(cls, v: Optional[float], info) -> Optional[float]:
+        # More comprehensive checks for low relative to open/close/high
+        open_price = info.data.get('open')
+        close_price = info.data.get('close') # close is required
+        high_price = info.data.get('high') # high check is somewhat redundant due to high_gte_low
+
+        if v is not None:
+            if open_price is not None and v > open_price:
+                # This can happen (e.g. gap down, low is still above prev open if it's for current day's low)
+                # logger.warning("Low price is greater than open price.") # Informational
+                pass
+            if v > close_price: # Close is required field
+                # logger.warning("Low price is greater than close price.") # Informational
+                pass
+            if high_price is not None and v > high_price: # This should be caught by high_gte_low
+                raise ValueError('Low price must be less than or equal to high price')
+        return v
+
 
 class RiskMetrics(BaseModel):
-    """Model for risk metrics of an asset."""
-    sharpe_ratio: float = Field(..., description="Sharpe ratio (risk-adjusted return)")
-    max_drawdown: float = Field(..., description="Maximum drawdown percentage")
-    var_95: float = Field(..., description="Value at Risk (95% confidence)")
-    beta: float = Field(..., description="Beta (market sensitivity)")
-    sortino_ratio: Optional[float] = Field(None, description="Sortino ratio (downside risk-adjusted return)")
-    calmar_ratio: Optional[float] = Field(None, description="Calmar ratio (return to max drawdown)")
-    cvar_95: Optional[float] = Field(None, description="Conditional Value at Risk (95% confidence)")
+    sharpe_ratio: Optional[float] = Field(None, description="Sharpe ratio") # Made Optional, as calc can fail
+    max_drawdown: Optional[float] = Field(None, description="Maximum drawdown percentage (0.0 to 1.0)")
+    var_95: Optional[float] = Field(None, description="Value at Risk (95% confidence, negative value)")
+    beta: Optional[float] = Field(None, description="Beta (market sensitivity)")
+    sortino_ratio: Optional[float] = Field(None, description="Sortino ratio")
+    calmar_ratio: Optional[float] = Field(None, description="Calmar ratio")
+    cvar_95: Optional[float] = Field(None, description="Conditional VaR (95%, negative value)")
 
 class ProviderInfo(BaseModel):
-    """Information about the provider used for analysis."""
-    name: str = Field(..., description="Provider name")
-    version: str = Field("1.0.0", description="Provider version")
-    fallback_used: bool = Field(False, description="Whether a fallback provider was used")
-    execution_time_ms: Optional[float] = Field(None, description="Execution time in milliseconds")
+    name: str
+    version: str = "1.0.0" # Default version
+    fallback_used: bool = False
+    execution_time_ms: Optional[float] = None
 
 class AnalyzeRequest(BaseModel):
-    """Request model for analysis endpoint."""
-    prices: Dict[str, float] = Field(..., description="Current prices for assets")
+    prices: Dict[str, float] = Field(..., description="Current prices for assets (symbol: price)")
     historical: Dict[str, List[HistoricalDataPoint]] = Field(
-        ..., description="Historical price data for assets"
+        default_factory=dict, # Allow empty historical data
+        description="Historical price data for assets (symbol: List[HistoricalDataPoint])"
     )
-    provider: Optional[str] = Field(None, description="Specific provider to use for analysis")
-    include_correlations: Optional[bool] = Field(False, description="Whether to include correlation analysis")
-    include_risk_metrics: Optional[bool] = Field(False, description="Whether to include risk metrics")
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "prices": {"AAPL": 150.25, "MSFT": 245.80, "GOOGL": 2750.15},
-                "historical": {
-                    "AAPL": [
-                        {"date": "2023-05-01", "close": 150.25},
-                        {"date": "2023-04-30", "close": 149.50}
-                    ]
-                },
-                "provider": "advanced",
-                "include_correlations": True,
-                "include_risk_metrics": True
-            }
-        }
+    provider: Optional[str] = None
+    include_correlations: bool = False # Default to False for leaner requests
+    include_risk_metrics: bool = False # Default to False
+
+    model_config = {"extra": "forbid"} # Forbid extra fields in request
+
+    @field_validator('prices')
+    @classmethod
+    def prices_must_be_positive_in_request(cls, v: Dict[str, float]) -> Dict[str, float]:
+        for symbol, price in v.items():
+            if price <= 0:
+                raise ValueError(f"Price for symbol '{symbol}' must be positive, got {price}")
+        return v
+
 
 class AnalyzeResponse(BaseModel):
-    """Response model for analysis endpoint."""
-    exposures: Dict[str, float] = Field(..., description="Calculated exposures for assets")
-    changes: Dict[str, float] = Field(..., description="Day-over-day percentage changes")
-    volatility: Dict[str, float] = Field(..., description="Volatility calculations")
-    correlations: Optional[Dict[str, Dict[str, float]]] = Field(None, description="Correlation matrix between assets")
-    risk_metrics: Optional[Dict[str, RiskMetrics]] = Field(None, description="Risk metrics for each asset")
-    summary: str = Field(..., description="Summary of analysis with alerts")
-    provider_info: ProviderInfo = Field(..., description="Information about the provider used")
+    exposures: Dict[str, float]
+    changes: Dict[str, float]
+    volatility: Dict[str, float]
+    correlations: Optional[Dict[str, Dict[str, float]]] = None
+    risk_metrics: Optional[Dict[str, Optional[RiskMetrics]]] = None # Values can be None if a symbol fails risk calc
+    summary: str
+    provider_info: ProviderInfo
     
-    class Config:
-        schema_extra = {
-            "example": {
-                "exposures": {"AAPL": 0.15, "MSFT": 0.25, "GOOGL": 0.60},
-                "changes": {"AAPL": 0.005, "MSFT": -0.002, "GOOGL": 0.01},
-                "volatility": {"AAPL": 0.02, "MSFT": 0.018, "GOOGL": 0.025},
-                "correlations": {
-                    "AAPL": {"AAPL": 1.0, "MSFT": 0.7, "GOOGL": 0.5},
-                    "MSFT": {"AAPL": 0.7, "MSFT": 1.0, "GOOGL": 0.6},
-                    "GOOGL": {"AAPL": 0.5, "MSFT": 0.6, "GOOGL": 1.0}
-                },
-                "risk_metrics": {
-                    "AAPL": {
-                        "sharpe_ratio": 1.2,
-                        "max_drawdown": 0.15,
-                        "var_95": -0.025,
-                        "beta": 0.9,
-                        "sortino_ratio": 1.5,
-                        "calmar_ratio": 0.8,
-                        "cvar_95": -0.03
-                    }
-                },
-                "summary": "Analysis Summary:\n- High exposure assets: GOOGL\n- Significant price changes: None\n- High volatility assets: GOOGL",
-                "provider_info": {
-                    "name": "advanced",
-                    "version": "1.0.0",
-                    "fallback_used": False,
-                    "execution_time_ms": 150.5
-                }
-            }
-        }
+    # Example data moved to main.py openapi_extra for cleaner models file
+    model_config = {"extra": "ignore"} # Ignore extra fields from provider calculations if any
+
 
 class ErrorResponse(BaseModel):
-    """Standard error response model."""
     status: str = Field("error", description="Status of the response")
-    message: str = Field(..., description="Error message")
-    details: Optional[Any] = Field(None, description="Additional error details")
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "status": "error",
-                "message": "Failed to analyze data",
-                "details": "Invalid historical data format"
-            }
-        }
+    message: str
+    details: Optional[Any] = None
+
+    model_config = {"extra": "ignore"}

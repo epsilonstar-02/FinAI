@@ -1,478 +1,240 @@
-"""Providers module for the Analysis Agent.
+# agents/analysis_agent/providers.py
+# Refined to use calculator functions and more robust risk metric calculations.
 
-This module contains implementations of different financial analysis providers.
-Each provider implements a common interface for financial calculations.
-"""
 from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Union, Optional
+from typing import Dict, List, Any, Optional
 import numpy as np
 import pandas as pd
-from scipy import stats
+# scipy.stats can be used for more advanced statistical measures if needed
+# from scipy import stats
+
+from .models import HistoricalDataPoint, RiskMetrics
+from .calculator import ( # Import specific functions from calculator
+    compute_exposures as calc_exposures,
+    compute_changes as calc_changes,
+    compute_volatility as calc_volatility,
+    compute_correlations_from_historical as calc_correlations
+)
+import logging
+
+logger = logging.getLogger(__name__)
 
 class AnalysisProvider(ABC):
     """Abstract base class for analysis providers."""
     
     @abstractmethod
-    def compute_exposures(self, prices: Dict[str, float]) -> Dict[str, float]:
-        """Compute portfolio exposures."""
-        pass
+    def compute_exposures(self, prices: Dict[str, float]) -> Dict[str, float]: pass
     
     @abstractmethod
-    def compute_changes(self, historical: Dict[str, List[Any]]) -> Dict[str, float]:
-        """Compute price changes."""
-        pass
+    def compute_changes(self, historical: Dict[str, List[HistoricalDataPoint]]) -> Dict[str, float]: pass
     
     @abstractmethod
-    def compute_volatility(self, historical: Dict[str, List[Any]], window: int) -> Dict[str, float]:
-        """Compute volatility metrics."""
-        pass
+    def compute_volatility(self, historical: Dict[str, List[HistoricalDataPoint]], window: int) -> Dict[str, float]: pass
     
     @abstractmethod
-    def compute_correlations(self, historical: Dict[str, List[Any]]) -> Dict[str, Dict[str, float]]:
-        """Compute correlations between assets."""
-        pass
+    def compute_correlations(self, historical: Dict[str, List[HistoricalDataPoint]]) -> Optional[Dict[str, Dict[str, float]]]: pass # Can return None
     
     @abstractmethod
-    def compute_risk_metrics(self, historical: Dict[str, List[Any]]) -> Dict[str, Dict[str, float]]:
-        """Compute risk metrics for assets."""
-        pass
+    def compute_risk_metrics(self, historical: Dict[str, List[HistoricalDataPoint]]) -> Dict[str, Optional[RiskMetrics]]: pass
 
 
 class DefaultAnalysisProvider(AnalysisProvider):
-    """Default implementation of analysis provider using NumPy and Pandas."""
+    """Default implementation using centralized calculator functions."""
     
     def compute_exposures(self, prices: Dict[str, float]) -> Dict[str, float]:
-        """
-        Compute relative exposure of each asset based on current prices.
-        
-        Args:
-            prices: Dictionary of asset symbols to current prices
-            
-        Returns:
-            Dictionary of asset symbols to exposure percentages
-        """
-        total = sum(prices.values())
-        if total == 0:
-            return {symbol: 0.0 for symbol in prices}
-        
-        return {symbol: price / total for symbol, price in prices.items()}
+        return calc_exposures(prices)
     
-    def compute_changes(self, historical: Dict[str, List[Any]]) -> Dict[str, float]:
-        """
-        Compute day-over-day percentage change for each asset.
-        
-        Args:
-            historical: Dictionary of asset symbols to lists of historical data points
-                      (expected to be objects with .date and .close attributes)
-            
-        Returns:
-            Dictionary of asset symbols to percentage changes
-        """
-        changes = {}
-        
-        for symbol, history in historical.items():
-            if len(history) < 2:
-                changes[symbol] = 0.0
-                continue
-                
-            # Sort by date (newest first)
-            sorted_history = sorted(history, key=lambda x: x.date, reverse=True)
-            
-            # Access 'close' attribute
-            current_close = sorted_history[0].close
-            previous_close = sorted_history[1].close
+    def compute_changes(self, historical: Dict[str, List[HistoricalDataPoint]]) -> Dict[str, float]:
+        return calc_changes(historical)
     
-            if previous_close == 0:  # Avoid division by zero
-                changes[symbol] = 0.0
-            else:
-                changes[symbol] = (current_close - previous_close) / previous_close
-                
-        return changes
+    def compute_volatility(self, historical: Dict[str, List[HistoricalDataPoint]], window: int) -> Dict[str, float]:
+        return calc_volatility(historical, window)
     
-    def compute_volatility(self, historical: Dict[str, List[Any]], window: int) -> Dict[str, float]:
-        """
-        Compute volatility (standard deviation of returns) for each asset.
-        
-        Args:
-            historical: Dictionary of asset symbols to lists of historical data points
-                      (expected to be objects with .date and .close attributes)
-            window: Number of days to use for volatility calculation
-            
-        Returns:
-            Dictionary of asset symbols to volatility values
-        """
-        volatility = {}
-        
-        for symbol, history in historical.items():
-            if len(history) < 2:  # Need at least 2 points to calculate 1 return
-                volatility[symbol] = 0.0
-                continue
-                
-            # Sort by date (newest first)
-            sorted_history = sorted(history, key=lambda x: x.date, reverse=True)
-            
-            # Take only the window size (or all if less than window)
-            window_data = sorted_history[:min(window, len(sorted_history))]
-            
-            if len(window_data) < 2:  # Need at least 2 points in the window to calculate returns
-                volatility[symbol] = 0.0
-                continue
-                
-            # Calculate daily returns from 'close' attribute
-            prices = [point.close for point in window_data]  # Prices are from newest to oldest
-            
-            # Returns: (P_t - P_{t-1}) / P_{t-1}. prices[i] is newer than prices[i+1]
-            returns = [(prices[i] - prices[i+1]) / prices[i+1] if prices[i+1] != 0 else 0.0
-                      for i in range(len(prices)-1)]
-            
-            if not returns:  # If only one price point in window_data after filtering, or all previous prices were 0
-                volatility[symbol] = 0.0
-            else:
-                volatility[symbol] = float(np.std(returns))
-                
-        return volatility
+    def compute_correlations(self, historical: Dict[str, List[HistoricalDataPoint]]) -> Optional[Dict[str, Dict[str, float]]]:
+        return calc_correlations(historical)
     
-    def compute_correlations(self, historical: Dict[str, List[Any]]) -> Dict[str, Dict[str, float]]:
-        """
-        Compute correlation matrix between assets.
-        
-        Args:
-            historical: Dictionary of asset symbols to lists of historical data points
+    def _calculate_single_asset_risk_metrics(self, symbol_history: List[HistoricalDataPoint], risk_free_rate: float = 0.01) -> Optional[RiskMetrics]:
+        """Helper to calculate risk metrics for a single asset."""
+        if len(symbol_history) < 30: # Need at least ~30 days for somewhat meaningful daily metrics
+            logger.info(f"Not enough data for {symbol_history[0].metadata.get('symbol','N/A') if symbol_history and symbol_history[0].metadata else 'N/A'} risk metrics (got {len(symbol_history)} points).")
+            return None
+
+        try:
+            prices = pd.Series([p.close for p in sorted(symbol_history, key=lambda x: x.date)])
+            returns = prices.pct_change().dropna()
+            if len(returns) < 5: return None # Need at least a few returns
+
+            # Sharpe Ratio (annualized, assuming 252 trading days)
+            # (Mean daily return - Mean daily risk-free rate) / StdDev daily returns * sqrt(252)
+            daily_rf_rate = (1 + risk_free_rate)**(1/252) - 1
+            excess_returns = returns - daily_rf_rate
+            sharpe_ratio = (np.mean(excess_returns) / np.std(excess_returns)) * np.sqrt(252) if np.std(excess_returns) != 0 else None
             
-        Returns:
-            Dictionary of dictionaries with pairwise correlations
-        """
-        # First convert to DataFrame for easier calculation
-        price_data = {}
-        symbols = list(historical.keys())
-        
-        # Skip if we have less than 2 assets
-        if len(symbols) < 2:
-            return {symbol: {symbol: 1.0} for symbol in symbols}
-        
-        # Extract and align price data
-        for symbol, history in historical.items():
-            if not history:
-                continue
-                
-            # Sort by date
-            sorted_history = sorted(history, key=lambda x: x.date)
-            
-            # Create a series of prices
-            dates = [point.date for point in sorted_history]
-            prices = [point.close for point in sorted_history]
-            
-            if dates and prices:
-                price_data[symbol] = pd.Series(prices, index=dates)
-        
-        # Skip if we don't have enough data
-        if len(price_data) < 2:
-            return {symbol: {symbol: 1.0} for symbol in price_data.keys()}
-        
-        # Create DataFrame from Series
-        df = pd.DataFrame(price_data)
-        
-        # Compute returns
-        returns_df = df.pct_change().dropna()
-        
-        # Compute correlation matrix
-        corr_matrix = returns_df.corr().fillna(0).round(3)
-        
-        # Convert to nested dictionary
-        result = {}
-        for sym1 in corr_matrix.index:
-            result[sym1] = {}
-            for sym2 in corr_matrix.columns:
-                result[sym1][sym2] = float(corr_matrix.loc[sym1, sym2])
-                
-        return result
-    
-    def compute_risk_metrics(self, historical: Dict[str, List[Any]]) -> Dict[str, Dict[str, float]]:
-        """
-        Compute risk metrics (Sharpe ratio, max drawdown, etc.) for each asset.
-        
-        Args:
-            historical: Dictionary of asset symbols to lists of historical data points
-            
-        Returns:
-            Dictionary of assets to risk metrics
-        """
-        risk_metrics = {}
-        
-        for symbol, history in historical.items():
-            if len(history) < 30:  # Need reasonable amount of data
-                risk_metrics[symbol] = {
-                    "sharpe_ratio": 0.0,
-                    "max_drawdown": 0.0,
-                    "var_95": 0.0,
-                    "beta": 0.0
-                }
-                continue
-                
-            # Sort by date
-            sorted_history = sorted(history, key=lambda x: x.date)
-            
-            # Extract prices
-            prices = np.array([point.close for point in sorted_history])
-            
-            # Calculate daily returns
-            returns = np.diff(prices) / prices[:-1]
-            returns = returns[~np.isnan(returns)]  # Remove NaN values
-            
-            if len(returns) < 5:
-                risk_metrics[symbol] = {
-                    "sharpe_ratio": 0.0,
-                    "max_drawdown": 0.0,
-                    "var_95": 0.0,
-                    "beta": 0.0
-                }
-                continue
-            
-            # Calculate metrics
-            mean_return = np.mean(returns)
-            std_return = np.std(returns)
-            
-            # Sharpe ratio (assuming risk-free rate = 0 for simplicity)
-            sharpe_ratio = mean_return / std_return if std_return > 0 else 0.0
-            
-            # Maximum drawdown
-            cumulative = np.cumprod(1 + returns)
-            running_max = np.maximum.accumulate(cumulative)
-            drawdowns = (running_max - cumulative) / running_max
-            max_drawdown = np.max(drawdowns) if len(drawdowns) > 0 else 0.0
-            
-            # Value at Risk (95%)
-            var_95 = np.percentile(returns, 5) if len(returns) > 20 else 0.0
-            
-            # Beta (using a simple approximation - would need market returns for real beta)
-            # Here we just use a random value between 0.5 and 1.5 for demonstration
-            # In a real implementation, you would calculate this against market returns
-            beta = 1.0  # Placeholder
-            
-            risk_metrics[symbol] = {
-                "sharpe_ratio": float(sharpe_ratio),
-                "max_drawdown": float(max_drawdown),
-                "var_95": float(var_95),
-                "beta": float(beta)
-            }
-        
-        return risk_metrics
+            # Max Drawdown
+            cumulative_returns = (1 + returns).cumprod()
+            peak = cumulative_returns.cummax()
+            drawdown = (cumulative_returns - peak) / peak
+            max_drawdown = abs(drawdown.min()) if not drawdown.empty else None # Positive value for drawdown
+
+            # VaR (95%) - Value at Risk (Parametric for simplicity, assuming normal distribution)
+            # Or use historical simulation: np.percentile(returns, 5)
+            var_95 = np.percentile(returns, 5) if len(returns) >= 20 else None # Historical VaR
+
+            # Beta - Placeholder as it requires market data
+            beta_placeholder = 1.0 # Needs actual market index returns for real calculation
+
+            return RiskMetrics(
+                sharpe_ratio=float(sharpe_ratio) if sharpe_ratio is not None and np.isfinite(sharpe_ratio) else None,
+                max_drawdown=float(max_drawdown) if max_drawdown is not None and np.isfinite(max_drawdown) else None,
+                var_95=float(var_95) if var_95 is not None and np.isfinite(var_95) else None,
+                beta=float(beta_placeholder) # Always returns placeholder
+            )
+        except Exception as e:
+            logger.error(f"Error calculating default risk metrics for a symbol: {e}", exc_info=True)
+            return None
+
+    def compute_risk_metrics(self, historical: Dict[str, List[HistoricalDataPoint]]) -> Dict[str, Optional[RiskMetrics]]:
+        metrics_dict: Dict[str, Optional[RiskMetrics]] = {}
+        for symbol, history_list in historical.items():
+            # Add symbol to metadata of each point for the helper if not already there
+            for point in history_list: 
+                if not hasattr(point, 'metadata') or point.metadata is None: point.metadata = {}
+                point.metadata['symbol'] = symbol 
+            metrics_dict[symbol] = self._calculate_single_asset_risk_metrics(history_list)
+        return metrics_dict
 
 
-class AdvancedAnalysisProvider(AnalysisProvider):
-    """Advanced implementation of analysis provider with more sophisticated metrics."""
+class AdvancedAnalysisProvider(DefaultAnalysisProvider): # Inherits from Default for base calculations
+    """Advanced implementation with more sophisticated metrics."""
     
-    def compute_exposures(self, prices: Dict[str, float]) -> Dict[str, float]:
-        """Compute portfolio exposures with sector classification."""
-        # Inherits basic functionality from default provider
-        provider = DefaultAnalysisProvider()
-        return provider.compute_exposures(prices)
-    
-    def compute_changes(self, historical: Dict[str, List[Any]]) -> Dict[str, float]:
-        """Compute price changes with momentum indicators."""
-        changes = {}
-        
-        for symbol, history in historical.items():
-            if len(history) < 2:
-                changes[symbol] = 0.0
-                continue
-                
-            # Sort by date (newest first)
-            sorted_history = sorted(history, key=lambda x: x.date, reverse=True)
-            
-            # Basic change calculation
-            current_close = sorted_history[0].close
-            previous_close = sorted_history[1].close
-    
-            if previous_close == 0:
-                changes[symbol] = 0.0
-            else:
-                # Calculate regular change
-                change = (current_close - previous_close) / previous_close
-                
-                # Add momentum component if we have enough data
-                if len(sorted_history) >= 10:
-                    prices = [point.close for point in sorted_history[:10]]
-                    # Simple momentum: difference between current price and 10-day average
-                    avg_price = sum(prices) / len(prices)
-                    momentum = (current_close - avg_price) / avg_price if avg_price > 0 else 0
+    def compute_changes(self, historical: Dict[str, List[HistoricalDataPoint]]) -> Dict[str, float]:
+        # Override for momentum-adjusted changes
+        changes = super().compute_changes(historical) # Get basic changes
+        momentum_adjusted_changes: Dict[str, float] = {}
+
+        for symbol, basic_change in changes.items():
+            history = historical.get(symbol, [])
+            if len(history) >= 10: # Need enough data for 10-day SMA
+                try:
+                    sorted_history = sorted(history, key=lambda x: x.date, reverse=True)
+                    current_price = sorted_history[0].close
+                    recent_prices = [p.close for p in sorted_history[:10]]
+                    sma_10 = np.mean(recent_prices)
                     
-                    # Blend regular change with momentum component
-                    changes[symbol] = 0.7 * change + 0.3 * momentum
-                else:
-                    changes[symbol] = change
-                
-        return changes
-    
-    def compute_volatility(self, historical: Dict[str, List[Any]], window: int) -> Dict[str, float]:
-        """Compute volatility with GARCH-like adjustment for time-varying volatility."""
-        # For simplicity, we'll implement a weighted volatility calculation
-        # that gives more weight to recent observations
-        volatility = {}
-        
+                    momentum_factor = 0.0 # No momentum if SMA is zero or current price is zero
+                    if sma_10 != 0 and current_price !=0:
+                         momentum_factor = (current_price - sma_10) / sma_10
+                    
+                    # Blend: e.g., 70% basic change, 30% momentum
+                    adjusted_change = 0.7 * basic_change + 0.3 * momentum_factor
+                    momentum_adjusted_changes[symbol] = adjusted_change if np.isfinite(adjusted_change) else basic_change
+                except Exception as e_mom:
+                    logger.warning(f"Error calculating momentum for {symbol}: {e_mom}. Using basic change.")
+                    momentum_adjusted_changes[symbol] = basic_change
+            else:
+                momentum_adjusted_changes[symbol] = basic_change
+        return momentum_adjusted_changes
+
+    def compute_volatility(self, historical: Dict[str, List[HistoricalDataPoint]], window: int) -> Dict[str, float]:
+        # Override for exponentially weighted volatility
+        volatilities: Dict[str, float] = {}
+        if not historical: return volatilities
+
         for symbol, history in historical.items():
-            if len(history) < 5:  # Need more data for this approach
-                volatility[symbol] = 0.0
+            if not history or len(history) < 5: # Need a few points for EWMA
+                volatilities[symbol] = 0.0
                 continue
-                
-            # Sort by date (newest first)
-            sorted_history = sorted(history, key=lambda x: x.date, reverse=True)
-            
-            # Take window size or all available
-            window_data = sorted_history[:min(window, len(sorted_history))]
-            
-            if len(window_data) < 5:
-                volatility[symbol] = 0.0
-                continue
-                
-            # Calculate prices and returns
-            prices = [point.close for point in window_data]
-            returns = [(prices[i] - prices[i+1]) / prices[i+1] if prices[i+1] != 0 else 0.0
-                      for i in range(len(prices)-1)]
-            
-            if not returns:
-                volatility[symbol] = 0.0
-                continue
-                
-            # Convert returns to numpy array for element-wise operations
-            returns_array = np.array(returns)
-                
-            # Create exponentially decaying weights
-            weights = np.exp(np.linspace(-1, 0, len(returns_array)))
-            weights = weights / np.sum(weights)
-            
-            # Calculate weighted standard deviation
-            weighted_avg = np.average(returns_array, weights=weights)
-            weighted_variance = np.sum(weights * (returns_array - weighted_avg)**2)
-            weighted_std = np.sqrt(weighted_variance)
-            
-            volatility[symbol] = float(weighted_std)
-                
-        return volatility
-    
-    def compute_correlations(self, historical: Dict[str, List[Any]]) -> Dict[str, Dict[str, float]]:
-        """Compute dynamic correlations with time decay."""
-        # We'll use exponentially weighted correlations
-        provider = DefaultAnalysisProvider()
-        return provider.compute_correlations(historical)  # Fall back to default for now
-    
-    def compute_risk_metrics(self, historical: Dict[str, List[Any]]) -> Dict[str, Dict[str, float]]:
-        """
-        Compute advanced risk metrics including conditional VaR.
-        
-        Includes robust error handling and NaN/inf checks for all calculations.
-        """
-        def safe_divide(numerator, denominator, default=0.0):
-            """Safely divide two numbers, handling division by zero and invalid values."""
-            if (not np.isfinite(numerator) or not np.isfinite(denominator) or 
-                denominator == 0 or np.isclose(denominator, 0)):
-                return default
-            result = numerator / denominator
-            return result if np.isfinite(result) else default
-            
-        risk_metrics = {}
-        
-        for symbol, history in historical.items():
-            # Default metrics in case of insufficient data or calculation errors
-            default_metrics = {
-                "sharpe_ratio": 0.0,
-                "sortino_ratio": 0.0,
-                "max_drawdown": 0.0,
-                "cvar_95": 0.0,
-                "calmar_ratio": 0.0
-            }
             
             try:
-                if not history or len(history) < 5:  # Need at least 5 data points
-                    risk_metrics[symbol] = default_metrics
-                    continue
-                    
-                # Sort by date and ensure we have valid data
-                sorted_history = sorted(history, key=lambda x: x.date)
-                prices = np.array([point.close for point in sorted_history if hasattr(point, 'close')])
-                
-                # Remove any NaN or infinite prices
-                mask = np.isfinite(prices) & (prices > 0)
-                if not np.any(mask):
-                    risk_metrics[symbol] = default_metrics
-                    continue
-                    
-                prices = prices[mask]
-                if len(prices) < 2:  # Need at least 2 prices to calculate returns
-                    risk_metrics[symbol] = default_metrics
+                sorted_history = sorted(history, key=lambda x: x.date, reverse=True)
+                prices_for_returns = [p.close for p in sorted_history[:min(window + 1, len(sorted_history))]]
+                if len(prices_for_returns) < 2:
+                    volatilities[symbol] = 0.0
                     continue
                 
-                # Calculate daily returns with safety checks
-                returns = np.diff(prices) / prices[:-1]
-                returns = returns[np.isfinite(returns)]
-                
-                if len(returns) < 5:  # Need at least 5 returns for meaningful metrics
-                    risk_metrics[symbol] = default_metrics
+                returns = pd.Series([
+                    (prices_for_returns[i] - prices_for_returns[i+1]) / prices_for_returns[i+1]
+                    if prices_for_returns[i+1] != 0 else 0.0
+                    for i in range(len(prices_for_returns)-1)
+                ])
+
+                if returns.empty:
+                    volatilities[symbol] = 0.0
                     continue
+
+                # Exponentially weighted moving standard deviation
+                # Span correlates to window, e.g., span of `window` days for returns
+                ewm_std = returns.ewm(span=max(2, window-1), adjust=True).std().iloc[-1] # Use last value
+                volatilities[symbol] = float(ewm_std) if pd.notnull(ewm_std) and np.isfinite(ewm_std) else 0.0
+
+            except Exception as e_vol:
+                logger.warning(f"Error calculating EWMA volatility for {symbol}: {e_vol}. Using default calc.")
+                # Fallback to default volatility calculation for this symbol
+                volatilities[symbol] = super().compute_volatility({symbol: history}, window).get(symbol, 0.0)
                 
-                # Calculate basic statistics with safety checks
-                mean_return = np.nanmean(returns) if len(returns) > 0 else 0.0
-                std_return = np.nanstd(returns, ddof=1) if len(returns) > 1 else 0.0
-                
-                # Sharpe ratio with safe division
-                sharpe_ratio = safe_divide(mean_return, std_return)
-                
-                # Sortino ratio (using only downside deviation)
-                downside_returns = returns[returns < 0]
-                downside_std = np.nanstd(downside_returns, ddof=1) if len(downside_returns) > 1 else 0.0
-                sortino_ratio = safe_divide(mean_return, downside_std)
-                
-                # Maximum drawdown with safety checks
-                try:
-                    cumulative = np.cumprod(1 + returns)
-                    running_max = np.maximum.accumulate(cumulative)
-                    drawdowns = np.where(running_max > 0, (running_max - cumulative) / running_max, 0.0)
-                    max_drawdown = np.max(drawdowns) if len(drawdowns) > 0 else 0.0
-                except:
-                    max_drawdown = 0.0
-                
-                # Conditional VaR (Expected Shortfall) with safety checks
-                try:
-                    if len(returns) >= 5:
-                        var_95_threshold = np.percentile(returns, 5, interpolation='lower')
-                        cvar_losses = returns[returns <= var_95_threshold]
-                        cvar_95 = np.nanmean(cvar_losses) if len(cvar_losses) > 0 else 0.0
-                        cvar_95 = float(cvar_95) if np.isfinite(cvar_95) else 0.0
-                    else:
-                        cvar_95 = 0.0
-                except:
-                    cvar_95 = 0.0
-                
-                # Calmar ratio with safety checks
-                try:
-                    annual_return = (1 + mean_return) ** 252 - 1  # Annualize daily return
-                    calmar_ratio = safe_divide(annual_return, max_drawdown) if max_drawdown > 1e-6 else 0.0
-                except:
-                    calmar_ratio = 0.0
-                
-                risk_metrics[symbol] = {
-                    "sharpe_ratio": float(sharpe_ratio) if np.isfinite(sharpe_ratio) else 0.0,
-                    "sortino_ratio": float(sortino_ratio) if np.isfinite(sortino_ratio) else 0.0,
-                    "max_drawdown": float(max_drawdown) if np.isfinite(max_drawdown) else 0.0,
-                    "cvar_95": cvar_95,
-                    "calmar_ratio": float(calmar_ratio) if np.isfinite(calmar_ratio) else 0.0
-                }
-                
-            except Exception as e:
-                # Log the error and return safe defaults
-                import logging
-                logging.warning(f"Error calculating advanced risk metrics for {symbol}: {str(e)}")
-                risk_metrics[symbol] = default_metrics
-        
-        return risk_metrics
+        return volatilities
+
+    def _calculate_single_asset_advanced_risk_metrics(self, symbol_history: List[HistoricalDataPoint], risk_free_rate: float = 0.01) -> Optional[RiskMetrics]:
+        """Calculates advanced risk metrics including Sortino, Calmar, CVaR."""
+        base_metrics = super()._calculate_single_asset_risk_metrics(symbol_history, risk_free_rate)
+        if base_metrics is None: return None # Not enough data or base calc failed
+
+        try:
+            prices = pd.Series([p.close for p in sorted(symbol_history, key=lambda x: x.date)])
+            returns = prices.pct_change().dropna()
+            if len(returns) < 20: # More data for stable advanced metrics
+                 logger.info(f"Not enough returns for advanced risk metrics for {symbol_history[0].metadata.get('symbol','N/A') if symbol_history else 'N/A'} (got {len(returns)} returns).")
+                 return base_metrics # Return base if not enough for advanced
+
+            daily_rf_rate = (1 + risk_free_rate)**(1/252) - 1
+            
+            # Sortino Ratio
+            downside_returns = returns[returns < daily_rf_rate] # Returns below risk-free rate
+            expected_return = np.mean(returns)
+            downside_std = np.std(downside_returns) if len(downside_returns) > 1 else 0
+            sortino_ratio = ((expected_return - daily_rf_rate) / downside_std) * np.sqrt(252) if downside_std != 0 else None
+            
+            # CVaR (95%) - Conditional Value at Risk (Expected Shortfall)
+            var_95_val = np.percentile(returns, 5) # Historical VaR
+            cvar_95 = np.mean(returns[returns <= var_95_val]) if len(returns[returns <= var_95_val]) > 0 else None
+
+            # Calmar Ratio (Annualized Return / Max Drawdown)
+            annualized_return = (1 + np.mean(returns))**252 - 1
+            max_dd = base_metrics.max_drawdown if base_metrics.max_drawdown is not None and base_metrics.max_drawdown > 1e-6 else None # Avoid div by zero
+            calmar_ratio = annualized_return / max_dd if max_dd is not None else None
+
+            # Update base_metrics with advanced ones
+            base_metrics.sortino_ratio = float(sortino_ratio) if sortino_ratio is not None and np.isfinite(sortino_ratio) else None
+            base_metrics.cvar_95 = float(cvar_95) if cvar_95 is not None and np.isfinite(cvar_95) else None
+            base_metrics.calmar_ratio = float(calmar_ratio) if calmar_ratio is not None and np.isfinite(calmar_ratio) else None
+            return base_metrics
+
+        except Exception as e:
+            logger.error(f"Error calculating advanced risk metrics for a symbol: {e}", exc_info=True)
+            return base_metrics # Return base if advanced calc fails
+
+    def compute_risk_metrics(self, historical: Dict[str, List[HistoricalDataPoint]]) -> Dict[str, Optional[RiskMetrics]]:
+        metrics_dict: Dict[str, Optional[RiskMetrics]] = {}
+        for symbol, history_list in historical.items():
+            for point in history_list: # Ensure metadata for logging in helper
+                if not hasattr(point, 'metadata') or point.metadata is None: point.metadata = {}
+                point.metadata['symbol'] = symbol
+            metrics_dict[symbol] = self._calculate_single_asset_advanced_risk_metrics(history_list)
+        return metrics_dict
 
 
 # Provider factory
+_provider_instances: Dict[str, AnalysisProvider] = {}
+
 def get_provider(provider_name: str = "default") -> AnalysisProvider:
-    """Get analysis provider by name."""
-    providers = {
-        "default": DefaultAnalysisProvider(),
-        "advanced": AdvancedAnalysisProvider(),
-    }
-    
-    return providers.get(provider_name.lower(), providers["default"])
+    """Cached factory for analysis providers."""
+    provider_key = provider_name.lower()
+    if provider_key not in _provider_instances:
+        if provider_key == "default":
+            _provider_instances[provider_key] = DefaultAnalysisProvider()
+        elif provider_key == "advanced":
+            _provider_instances[provider_key] = AdvancedAnalysisProvider()
+        else:
+            logger.warning(f"Unknown provider name: {provider_name}. Falling back to default.")
+            _provider_instances[provider_key] = DefaultAnalysisProvider() # Fallback
+    return _provider_instances[provider_key]
