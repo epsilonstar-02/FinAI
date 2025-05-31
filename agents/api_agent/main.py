@@ -1,234 +1,236 @@
-# Enhanced FastAPI app with multi-provider financial data support
+# agents/api_agent/main.py
+# Adjustments for clarity, error handling, and using the refactored client.
 
-from fastapi import FastAPI, HTTPException, Depends, Query, Body, Path
+from fastapi import FastAPI, HTTPException, Depends, Query, Path, Body, status # Added status
 from fastapi.responses import JSONResponse
 from .models import (
-    PriceRequest, PriceResponse, HistoricalRequest, HistoricalResponse,
-    MultiProviderPriceRequest, MultiProviderPriceResponse, ProviderPrice,
-    DataProvider
+    PriceResponse, HistoricalResponse, MultiProviderPriceRequest, 
+    MultiProviderPriceResponse, ProviderPrice, OHLC # OHLC needed for type hint if we create it here
 )
-from .client import (
-    fetch_current_price, fetch_historical, APIClientError, 
-    FinancialDataClient, _client,
-    ProviderNotAvailableError, NoDataAvailableError
+from .client import ( # Renamed functions and client access
+    get_financial_data_client, # Use getter for singleton
+    fetch_current_price_with_fallback, fetch_historical_data_with_fallback,
+    fetch_current_price_from_specific_provider,
+    APIClientError, ProviderNotAvailableError, NoDataAvailableError
 )
-from .config import settings
+from .config import settings, DataProvider
 
-import uvicorn
 import asyncio
-from datetime import datetime
+from datetime import datetime, date
 import logging
 from typing import List, Optional, Dict, Any
 import statistics
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app with enhanced metadata
 app = FastAPI(
-    title="Enhanced API Agent",
-    description="Financial data API with multi-provider support (Alpha Vantage, Yahoo Finance, FMP)",
-    version="0.2.0",
+    title="API Agent", # Simplified title
+    description="Financial data API with multi-provider support.",
+    version="0.3.0", 
     docs_url="/docs",
     redoc_url="/redoc"
 )
 
+# Dependency to get the client instance
+def get_client() -> 'FinancialDataClient': # Forward reference FinancialDataClient
+    return get_financial_data_client()
 
-@app.get("/health")
-def health():
-    """Health check endpoint"""
-    providers = list(_client.providers.keys())
+
+@app.on_event("startup")
+async def startup_event():
+    # Initialize the client on startup to catch config issues early
+    get_financial_data_client() 
+    logger.info(f"API Agent started. Available providers: {list(get_client().providers.keys())}")
+
+
+@app.get("/health", tags=["General"])
+async def health(client: 'FinancialDataClient' = Depends(get_client)): # Use DI for client
     return {
         "status": "ok", 
         "agent": "API Agent",
-        "version": "0.2.0",
-        "available_providers": providers,
+        "version": app.version,
+        "available_providers": list(client.providers.keys()),
         "timestamp": datetime.utcnow()
     }
 
 
-@app.get("/providers")
-def get_providers():
-    """List all available data providers"""
-    providers = {}
-    for provider_name, provider in _client.providers.items():
-        providers[provider_name] = {
-            "name": provider_name,
-            "available": True,
-            "type": provider.__class__.__name__
+@app.get("/providers", tags=["General"])
+async def get_providers_info(client: 'FinancialDataClient' = Depends(get_client)):
+    providers_details = {}
+    for provider_name_str, provider_instance in client.providers.items():
+        providers_details[provider_name_str] = {
+            "name": provider_name_str,
+            "status": "available",
+            "type": provider_instance.__class__.__name__
         }
+    # Ensure PROVIDER_PRIORITY has string values from enum
+    priority_order_str = [dp.value for dp in settings.PROVIDER_PRIORITY]
         
     return {
-        "providers": providers,
-        "default_priority": settings.PROVIDER_PRIORITY,
-        "fallback_enabled": settings.ENABLE_FALLBACK
+        "configured_providers": providers_details,
+        "provider_priority_order": priority_order_str,
+        "fallback_enabled": settings.ENABLE_FALLBACK,
+        "max_retries": settings.MAX_RETRIES,
+        "retry_backoff_factor": settings.RETRY_BACKOFF
     }
 
 
-@app.get("/price", response_model=PriceResponse)
-async def get_price(request: PriceRequest = Depends()):
-    """Get current price for a symbol with optional provider preference"""
+@app.get("/price", response_model=PriceResponse, tags=["Data"])
+async def get_price(
+    symbol: str = Query(..., min_length=1, max_length=10, pattern="^[A-Z0-9.\-]+$", description="Stock ticker symbol"),
+    provider: Optional[DataProvider] = Query(None, description="Preferred data provider (enum value like 'yahoo_finance')")
+):
     try:
-        # Pass the preferred provider if specified
-        preferred_provider = request.provider.value if request.provider else None
-        data = await fetch_current_price(request.symbol, preferred_provider)
-        
-        # If additional_data not in response, add it as None for schema compatibility
-        if "additional_data" not in data:
-            data["additional_data"] = None
-            
-        return data
+        preferred_provider_str = provider.value if provider else None
+        data = await fetch_current_price_with_fallback(symbol, preferred_provider_str)
+        return PriceResponse(**data)
+    except NoDataAvailableError as e:
+        logger.warning(f"No data available for price of {symbol}: {e}")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except ProviderNotAvailableError as e: # e.g. if preferred_provider is not configured
+        logger.warning(f"Provider not available for price of {symbol}: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except APIClientError as e:
-        error_msg = str(e)
-        status_code = 502
-        
-        if isinstance(e, ProviderNotAvailableError):
-            status_code = 400  # Bad Request - provider not available
-        elif isinstance(e, NoDataAvailableError):
-            status_code = 404  # Not Found - no data for symbol
-            
-        raise HTTPException(status_code=status_code, detail=error_msg)
+        logger.error(f"API client error getting price for {symbol}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /price for {symbol}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected server error occurred.")
 
 
-@app.get("/historical", response_model=HistoricalResponse)
-async def get_historical(request: HistoricalRequest = Depends()):
-    """Get historical data for a symbol with optional provider preference"""
-    if request.start > request.end:
-        raise HTTPException(
-            status_code=400, detail="start date must be before end date"
-        )
+@app.get("/historical", response_model=HistoricalResponse, tags=["Data"])
+async def get_historical(
+    symbol: str = Query(..., min_length=1, max_length=10, pattern="^[A-Z0-9.\-]+$", description="Stock ticker symbol"),
+    start_date: date = Query(..., description="Start date for historical data (YYYY-MM-DD)"),
+    end_date: date = Query(..., description="End date for historical data (YYYY-MM-DD)"),
+    provider: Optional[DataProvider] = Query(None, description="Preferred data provider (enum value)")
+):
+    if start_date > end_date:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Start date must be before or same as end date.")
     
     try:
-        # Pass the preferred provider if specified
-        preferred_provider = request.provider.value if request.provider else None
-        data = await fetch_historical(
-            request.symbol, request.start, request.end, preferred_provider
-        )
-        
-        # Add required fields for enhanced schema
-        if "provider" not in data:
-            data["provider"] = "default"
-        if "start_date" not in data:
-            data["start_date"] = request.start
-        if "end_date" not in data:
-            data["end_date"] = request.end
-        if "metadata" not in data:
-            data["metadata"] = None
-            
-        return data
+        preferred_provider_str = provider.value if provider else None
+        # Client expects date objects directly
+        data = await fetch_historical_data_with_fallback(symbol, start_date, end_date, preferred_provider_str)
+        # The client now should return start_date and end_date in its dict
+        return HistoricalResponse(**data)
+    except NoDataAvailableError as e:
+        logger.warning(f"No data available for historicals of {symbol}: {e}")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except ProviderNotAvailableError as e:
+        logger.warning(f"Provider not available for historicals of {symbol}: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except APIClientError as e:
-        error_msg = str(e)
-        status_code = 502
-        
-        if isinstance(e, ProviderNotAvailableError):
-            status_code = 400  # Bad Request - provider not available
-        elif isinstance(e, NoDataAvailableError):
-            status_code = 404  # Not Found - no data for symbol
-            
-        raise HTTPException(status_code=status_code, detail=error_msg)
+        logger.error(f"API client error getting historicals for {symbol}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error in /historical for {symbol}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="An unexpected server error occurred.")
 
 
-@app.post("/multi-price", response_model=MultiProviderPriceResponse)
-async def get_multi_provider_price(request: MultiProviderPriceRequest):
-    """Get price from multiple providers simultaneously and calculate consensus"""
-    prices = []
-    tasks = []
-    
-    # Create async tasks for each provider
-    for provider in request.providers:
-        task = asyncio.create_task(_fetch_provider_price(request.symbol, provider.value))
-        tasks.append((provider.value, task))
-    
-    # Wait for all tasks to complete
-    for provider_name, task in tasks:
-        price = await task
-        prices.append(price)
-    
-    # Calculate consensus price if we have successful results
-    successful_prices = [p for p in prices if p.status == "success"]
-    consensus_price = None
-    
-    if successful_prices:
-        price_values = [p.price for p in successful_prices]
-        consensus_price = statistics.median(price_values) if len(price_values) > 1 else price_values[0]
-    
-    return {
-        "symbol": request.symbol,
-        "prices": prices,
-        "consensus_price": consensus_price,
-        "timestamp": datetime.utcnow()
-    }
-
-
-async def _fetch_provider_price(symbol: str, provider: str) -> ProviderPrice:
-    """Helper function to fetch price from a specific provider with error handling"""
+async def _fetch_price_for_multi_provider_safe(symbol: str, provider_name_str: str) -> ProviderPrice:
+    """Helper to fetch price from one specific provider for /multi-price, safely."""
     try:
-        result = await _client.fetch_current_price(symbol, provider)
+        result = await fetch_current_price_from_specific_provider(symbol, provider_name_str)
         return ProviderPrice(
-            provider=provider,
+            provider=result["provider"], # Should match provider_name_str
             price=result["price"],
             timestamp=result["timestamp"],
             status="success",
             error_message=None
         )
-    except Exception as e:
-        logger.error(f"Error fetching price from {provider}: {str(e)}")
+    except Exception as e: # Catch all errors from specific provider call
+        logger.warning(f"Error fetching price from '{provider_name_str}' for '{symbol}' (in /multi-price): {e}")
         return ProviderPrice(
-            provider=provider,
-            price=0.0,
+            provider=provider_name_str,
+            price=None,
             timestamp=datetime.utcnow(),
             status="error",
             error_message=str(e)
         )
 
+@app.post("/multi-price", response_model=MultiProviderPriceResponse, tags=["Advanced"])
+async def get_multi_provider_price(request: MultiProviderPriceRequest = Body(...)):
+    # request.providers are DataProvider enum members
+    tasks = [
+        _fetch_price_for_multi_provider_safe(request.symbol, provider_enum_member.value)
+        for provider_enum_member in request.providers
+    ]
+    
+    price_results: List[ProviderPrice] = await asyncio.gather(*tasks)
+    
+    successful_prices = [p.price for p in price_results if p.status == "success" and p.price is not None]
+    consensus_price_value: Optional[float] = None
+    
+    if successful_prices:
+        consensus_price_value = statistics.median(successful_prices) # median handles single item list too
+    
+    return MultiProviderPriceResponse(
+        symbol=request.symbol,
+        prices=price_results,
+        consensus_price=consensus_price_value,
+        timestamp=datetime.utcnow()
+    )
 
-@app.get("/compare/{symbol}")
-async def compare_providers(symbol: str):
-    """Compare data across all available providers for a symbol"""
-    providers = list(_client.providers.keys())
-    results = {}
-    tasks = {}
+
+async def _fetch_price_for_comparison_safe(symbol: str, provider_name_str: str) -> Dict[str, Any]:
+    """Helper to safely fetch price for /compare-providers."""
+    try:
+        data = await fetch_current_price_from_specific_provider(symbol, provider_name_str)
+        return {"status": "success", **data}
+    except Exception as e:
+        logger.warning(f"Failed to fetch price from '{provider_name_str}' for '{symbol}' (in /compare-providers): {e}")
+        return {"status": "error", "provider": provider_name_str, "error": str(e), "timestamp": datetime.utcnow()}
+
+@app.get("/compare-providers/{symbol}", tags=["Advanced"])
+async def compare_providers(
+    symbol: str = Path(..., min_length=1, max_length=10, pattern="^[A-Z0-9.\-]+$", description="Stock ticker symbol"),
+    client: 'FinancialDataClient' = Depends(get_client)
+):
+    available_providers_strs = list(client.providers.keys())
+    if not available_providers_strs:
+         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="No data providers configured or available.")
+
+    tasks = {
+        provider_str: _fetch_price_for_comparison_safe(symbol, provider_str)
+        for provider_str in available_providers_strs
+    }
     
-    # Create tasks for each provider
-    for provider in providers:
-        task = asyncio.create_task(_safe_fetch_price(symbol, provider))
-        tasks[provider] = task
+    # Using asyncio.gather with a dictionary of tasks requires a bit more work to map results
+    # Alternative: gather list of tasks and map results back based on original order or provider name in result
+    provider_names_ordered = list(tasks.keys())
+    gathered_results = await asyncio.gather(*[tasks[name] for name in provider_names_ordered])
     
-    # Wait for all tasks to complete
-    for provider, task in tasks.items():
-        result = await task
-        results[provider] = result
+    comparison_results = {name: result for name, result in zip(provider_names_ordered, gathered_results)}
     
-    # Calculate statistics if we have enough data
-    valid_prices = [data["price"] for provider, data in results.items() 
-                   if data["status"] == "success" and "price" in data]
+    valid_prices = [
+        data["price"] for data in comparison_results.values() 
+        if data["status"] == "success" and data.get("price") is not None
+    ]
     
-    stats = {}
+    stats: Dict[str, Any] = {"count_successful": len(valid_prices), "count_attempted": len(available_providers_strs)}
     if valid_prices:
-        stats["count"] = len(valid_prices)
-        stats["min"] = min(valid_prices)
-        stats["max"] = max(valid_prices)
-        stats["mean"] = statistics.mean(valid_prices) if valid_prices else None
-        stats["median"] = statistics.median(valid_prices) if len(valid_prices) > 1 else valid_prices[0] if valid_prices else None
-        stats["variance"] = statistics.variance(valid_prices) if len(valid_prices) > 1 else 0
-    
+        stats["min_price"] = min(valid_prices)
+        stats["max_price"] = max(valid_prices)
+        stats["mean_price"] = statistics.mean(valid_prices)
+        stats["median_price"] = statistics.median(valid_prices)
+        if len(valid_prices) > 1:
+            stats["stdev_price"] = statistics.stdev(valid_prices)
+            stats["variance_price"] = statistics.variance(valid_prices)
+        else:
+            stats["stdev_price"] = 0.0
+            stats["variance_price"] = 0.0
+
     return {
         "symbol": symbol,
-        "providers": results,
-        "statistics": stats,
-        "timestamp": datetime.utcnow()
+        "comparison_timestamp": datetime.utcnow(),
+        "provider_results": comparison_results,
+        "summary_statistics": stats
     }
 
 
-async def _safe_fetch_price(symbol: str, provider: str) -> Dict[str, Any]:
-    """Safely fetch price data from a provider"""
-    try:
-        data = await _client.fetch_current_price(symbol, provider)
-        return {"status": "success", **data}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
-
-
 if __name__ == "__main__":
+    import uvicorn
+    # Corrected uvicorn run command for module structure if main.py is inside api_agent
+    # Example: python -m agents.api_agent.main
     uvicorn.run("agents.api_agent.main:app", host="0.0.0.0", port=8001, reload=True)
