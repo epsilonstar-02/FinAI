@@ -1,341 +1,162 @@
-"""
-Enhanced FastAPI application for the Scraping Agent microservice.
-Implements endpoints for news, SEC filings, company profiles, and more.
-"""
+# agents/scraping_agent/main.py
+# Updated to use consolidated loaders and refined error handling.
+
 import logging
-import time
-from fastapi import FastAPI, HTTPException, Query, Depends, status, Path
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, Query, Depends, status, Path as FastApiPath
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from typing import Annotated, List, Optional
+from typing import List, Optional 
 
-# Import enhanced models
 from .models import (
-    # Request models
-    NewsRequest, CompanyNewsRequest, MarketNewsRequest, 
-    FilingRequest, CompanyFilingsRequest, CompanyProfileRequest,
-    EarningsRequest,
-    
-    # Response models
+    NewsRequest, 
     NewsResponse, CompanyNewsResponse, MarketNewsResponse, 
-    FilingResponse, CompanyFilingsResponse, CompanyProfileResponse,
-    EarningsResponse, FinancialReportResponse
+    FilingRequest, FilingResponse, CompanyFilingsResponse, 
+    CompanyProfileResponse, EarningsResponse
 )
-
-# Import enhanced document loaders
 from .document_loaders import (
     news_loader, sec_filing_loader, company_profile_loader, earnings_loader,
-    ScrapingError, ContentExtractionError, RateLimitError
+    ScrapingError, ContentExtractionError, RateLimitError, SourceUnavailableError
 )
 from .config import settings
 
-# Configure logging
-logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper()))
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app with enhanced documentation
 app = FastAPI(
-    title="Enhanced Scraping Agent",
-    description="""Microservice for scraping financial news, SEC filings, company profiles, and more.
-    
-    All scraping is done using legal, open-source methods with proper rate limiting and caching.
-    Data sources include: news sites, SEC EDGAR, Yahoo Finance, and other public financial data repositories.
-    """,
-    version="2.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    title="Scraping Agent", # Simplified title
+    description="Microservice for scraping financial news, SEC filings, company data.",
+    version="2.1.0", # Incremented for this refactor
+    docs_url="/docs", redoc_url="/redoc",
 )
 
-# Add CORS middleware
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins in development
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
+    allow_methods=["*"], allow_headers=["*"],
 )
 
-# Custom exception handlers
-@app.exception_handler(ScrapingError)
-async def scraping_error_handler(request, exc):
-    """Handle scraping-specific errors."""
-    logger.error(f"Scraping error: {str(exc)}")
-    return JSONResponse(
-        status_code=status.HTTP_502_BAD_GATEWAY,
-        content={"detail": str(exc)},
-    )
+# Exception Handlers
+@app.exception_handler(SourceUnavailableError)
+async def source_unavailable_handler(request, exc: SourceUnavailableError):
+    logger.warning(f"Source unavailable for {request.url.path}: {exc}")
+    return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
 
 @app.exception_handler(RateLimitError)
-async def rate_limit_error_handler(request, exc):
-    """Handle rate limit errors."""
-    logger.warning(f"Rate limit error: {str(exc)}")
-    return JSONResponse(
-        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        content={"detail": str(exc)},
-    )
+async def rate_limit_handler(request, exc: RateLimitError):
+    logger.warning(f"Rate limit hit processing {request.url.path}: {exc}")
+    return JSONResponse(status_code=status.HTTP_429_TOO_MANY_REQUESTS, content={"detail": str(exc)})
 
-@app.exception_handler(Exception)
-async def general_exception_handler(request, exc):
-    """Handle all uncaught exceptions."""
-    if isinstance(exc, HTTPException):
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"detail": exc.detail},
-        )
-    
-    logger.error(f"Uncaught exception: {str(exc)}")
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "An unexpected error occurred"},
-    )
+@app.exception_handler(ContentExtractionError)
+async def content_extraction_handler(request, exc: ContentExtractionError):
+    logger.error(f"Content extraction failed for {request.url.path}: {exc}")
+    return JSONResponse(status_code=status.HTTP_502_BAD_GATEWAY, content={"detail": f"Failed to extract content: {exc}"})
 
-# Health check endpoint
-@app.get("/health", 
-         summary="Health check endpoint",
-         description="Returns the health status of the Scraping Agent")
-async def health_check():
-    """Health check endpoint."""
-    return {
-        "status": "ok",
-        "agent": "Enhanced Scraping Agent",
-        "version": "2.0.0",
-        "features": ["news", "sec_filings", "company_profiles", "earnings", "market_news"],
-        "timestamp": time.time()
-    }
+@app.exception_handler(ScrapingError) # General scraping errors
+async def scraping_error_handler(request, exc: ScrapingError):
+    logger.error(f"A scraping error occurred for {request.url.path}: {exc}")
+    return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"detail": f"Scraping operation failed: {exc}"})
 
-# News scraping endpoints
+@app.exception_handler(Exception) # Catch-all for unexpected
+async def general_exception_handler(request, exc: Exception):
+    logger.error(f"Unexpected error for {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"detail": "An unexpected internal server error occurred."})
 
-@app.get("/news", 
-         response_model=NewsResponse,
-         summary="Fetch general news articles",
-         description="Fetches news articles for a specified topic")
-async def get_news(
-    request: NewsRequest = Depends()
+
+# Endpoints
+TAG_UTILITY = "Utility"
+TAG_NEWS = "News Scraping"
+TAG_FILINGS = "SEC Filings"
+TAG_COMPANY_DATA = "Company Data"
+
+@app.get("/health", summary="Health Check", tags=[TAG_UTILITY])
+async def health_check_endpoint():
+    return {"status": "ok", "agent": "Scraping Agent", "version": app.version, "timestamp": datetime.utcnow()}
+
+@app.get("/news", response_model=NewsResponse, summary="General News by Topic", tags=[TAG_NEWS])
+async def get_general_news(request: NewsRequest = Depends()):
+    # Default to Google News. If source=yahoo specified, it implies topic is a symbol for yahoo_finance_news.
+    # However, /company/news/{symbol} is better for symbol-specific Yahoo news.
+    # This endpoint is best for topic-based Google News.
+    if request.source and request.source.lower() in ["yahoo", "yahoo_finance"]:
+        logger.info(f"Received request for Yahoo news with topic '{request.topic}'. Consider /company/news for symbol-specific news.")
+        # This might not yield good results if topic isn't a symbol.
+        articles = await news_loader.fetch_yahoo_finance_news(request.topic, request.limit)
+        source_used = "Yahoo Finance (via Topic)"
+    else:
+        if request.source and request.source.lower() not in ["google", "google_news"]:
+            logger.warning(f"Unsupported news source '{request.source}' for general news, defaulting to Google News.")
+        articles = await news_loader.fetch_google_news(request.topic, request.limit)
+        source_used = "Google News"
+        
+    return NewsResponse(source=source_used, articles=articles, query=request.topic)
+
+@app.get("/company/news/{symbol}", response_model=CompanyNewsResponse, summary="Company-Specific News", tags=[TAG_NEWS])
+async def get_company_specific_news(
+    symbol: str = FastApiPath(..., description="Stock ticker symbol", min_length=1, max_length=10, pattern=r'^[A-Z0-9.\-]+$'),
+    limit: int = Query(5, description="Max articles", ge=1, le=20)
 ):
-    """
-    Fetch news articles for a specified topic.
+    # Primary: Yahoo Finance News for the symbol
+    articles = await news_loader.fetch_yahoo_finance_news(symbol.upper(), limit)
     
-    Args:
-        request: NewsRequest containing topic, limit, and optional source
-        
-    Returns:
-        NewsResponse containing the scraped articles
-    """
-    # Input validation already handled by Pydantic
-    try:
-        # Use Google News as default source if not specified
-        if request.source == "yahoo" or request.source == "yahoo_finance":
-            articles = await news_loader.fetch_yahoo_finance_news(request.topic, request.limit)
-        else:  # Default to Google News
-            articles = await news_loader.fetch_google_news(request.topic, request.limit)
-        
-        return NewsResponse(
-            source=request.source or "Google News",
-            timestamp=time.time(),
-            articles=articles,
-            query=request.topic
-        )
-    except Exception as e:
-        logger.error(f"Error in get_news: {str(e)}")
-        raise HTTPException(status_code=502, detail=f"News scraping failed: {str(e)}")
+    company_name_val: Optional[str] = None
+    # Try to get company name for richer response
+    try: profile = await company_profile_loader.fetch_company_profile(symbol.upper()); company_name_val = profile.name
+    except ScrapingError: logger.debug(f"Profile fetch failed for {symbol}, company name may be missing in news response.")
 
-@app.get("/company/news/{symbol}", 
-         response_model=CompanyNewsResponse,
-         summary="Fetch company-specific news",
-         description="Fetches news articles for a specific company by ticker symbol")
-async def get_company_news(
-    symbol: str = Path(..., description="Stock ticker symbol"),
-    limit: int = Query(5, description="Maximum number of articles", ge=1, le=20)
-):
-    """
-    Fetch news articles for a specific company.
-    
-    Args:
-        symbol: Stock ticker symbol
-        limit: Maximum number of articles to return
-        
-    Returns:
-        CompanyNewsResponse containing the scraped articles
-    """
-    try:
-        # Use Yahoo Finance for company-specific news
-        articles = await news_loader.fetch_yahoo_finance_news(symbol, limit)
-        
-        # If we didn't get enough articles, try searching by company name too
-        if len(articles) < limit:
-            try:
-                # Try to get company name
-                profile = await company_profile_loader.fetch_company_profile(symbol)
-                company_name = profile.name
-                
-                # Get more news with company name
-                name_articles = await news_loader.fetch_google_news(company_name, limit - len(articles))
-                articles.extend(name_articles)
-            except Exception as name_error:
-                logger.warning(f"Error getting company name news: {str(name_error)}")
-        
-        return CompanyNewsResponse(
-            source="Yahoo Finance",
-            timestamp=time.time(),
-            articles=articles,
-            query=symbol,
-            symbol=symbol,
-            company_name=articles[0].source if articles else None
-        )
-    except Exception as e:
-        logger.error(f"Error in get_company_news: {str(e)}")
-        raise HTTPException(status_code=502, detail=f"Company news scraping failed: {str(e)}")
-
-@app.get("/market/news", 
-         response_model=MarketNewsResponse,
-         summary="Fetch market news",
-         description="Fetches general market news from multiple sources")
-async def get_market_news(
-    request: MarketNewsRequest = Depends()
-):
-    """
-    Fetch general market news from multiple sources.
-    
-    Args:
-        request: MarketNewsRequest with limit and optional category
-        
-    Returns:
-        MarketNewsResponse containing the scraped articles
-    """
-    try:
-        articles = await news_loader.fetch_market_news(request.limit)
-        
-        return MarketNewsResponse(
-            source="Multiple Financial News Sources",
-            timestamp=time.time(),
-            articles=articles,
-            query="market news",
-            category=request.category
-        )
-    except Exception as e:
-        logger.error(f"Error in get_market_news: {str(e)}")
-        raise HTTPException(status_code=502, detail=f"Market news scraping failed: {str(e)}")
-
-# SEC filing endpoints
-
-@app.post("/filing", 
-           response_model=FilingResponse,
-           summary="Fetch SEC filing document",
-           description="Fetches an SEC filing document from a URL")
-async def get_filing(request: FilingRequest):
-    """
-    Fetch SEC filing document from a URL.
-    
-    Args:
-        request: FilingRequest containing the URL of the SEC filing
-        
-    Returns:
-        FilingResponse containing the scraped filing
-    """
-    try:
-        return await sec_filing_loader._process_filing(str(request.filing_url))
-    except Exception as e:
-        logger.error(f"Error in get_filing: {str(e)}")
-        raise HTTPException(status_code=502, detail=f"Filing scraping failed: {str(e)}")
-
-@app.get("/company/filings/{symbol}", 
-         response_model=CompanyFilingsResponse,
-         summary="Fetch company SEC filings",
-         description="Fetches SEC filings for a specific company by ticker symbol")
-async def get_company_filings(
-    symbol: str = Path(..., description="Stock ticker symbol"),
-    form_type: Optional[str] = Query(None, description="SEC form type (e.g., '10-K', '10-Q', '8-K')"),
-    limit: int = Query(5, description="Maximum number of filings", ge=1, le=10)
-):
-    """
-    Fetch SEC filings for a specific company.
-    
-    Args:
-        symbol: Stock ticker symbol
-        form_type: Optional SEC form type filter
-        limit: Maximum number of filings to return
-        
-    Returns:
-        CompanyFilingsResponse containing the scraped filings
-    """
-    try:
-        filings = await sec_filing_loader.fetch_company_filings(symbol, form_type, limit)
-        
-        # Try to get company name
-        company_name = None
+    # Fallback: If not enough articles from Yahoo, try Google News with symbol/company name
+    if len(articles) < limit:
+        logger.info(f"Yahoo News for {symbol} returned {len(articles)} articles (limit {limit}). Trying Google News fallback.")
+        google_topic = company_name_val if company_name_val else symbol.upper()
         try:
-            profile = await company_profile_loader.fetch_company_profile(symbol)
-            company_name = profile.name
-        except Exception:
-            if filings and filings[0].company:
-                company_name = filings[0].company
-        
-        return CompanyFilingsResponse(
-            symbol=symbol,
-            company_name=company_name,
-            timestamp=time.time(),
-            filings=filings
-        )
-    except Exception as e:
-        logger.error(f"Error in get_company_filings: {str(e)}")
-        raise HTTPException(status_code=502, detail=f"Company filings scraping failed: {str(e)}")
-
-# Company profile endpoint
-
-@app.get("/company/profile/{symbol}", 
-         response_model=CompanyProfileResponse,
-         summary="Fetch company profile",
-         description="Fetches company profile and basic information by ticker symbol")
-async def get_company_profile(
-    symbol: str = Path(..., description="Stock ticker symbol")
-):
-    """
-    Fetch company profile and basic information.
+            google_articles = await news_loader.fetch_google_news(google_topic, limit - len(articles))
+            existing_urls = {art.url for art in articles}
+            for g_art in google_articles:
+                if g_art.url not in existing_urls: articles.append(g_art); existing_urls.add(g_art.url)
+        except Exception as e_gn_fb: logger.warning(f"Google News fallback for {symbol} failed: {e_gn_fb}")
     
-    Args:
-        symbol: Stock ticker symbol
-        
-    Returns:
-        CompanyProfileResponse containing the company profile
-    """
-    try:
-        return await company_profile_loader.fetch_company_profile(symbol)
-    except Exception as e:
-        logger.error(f"Error in get_company_profile: {str(e)}")
-        raise HTTPException(status_code=502, detail=f"Company profile scraping failed: {str(e)}")
+    return CompanyNewsResponse(
+        source="Yahoo Finance / Google News", articles=articles[:limit], 
+        query=symbol, symbol=symbol.upper(), company_name=company_name_val
+    )
 
-# Earnings endpoint
+@app.get("/market/news", response_model=MarketNewsResponse, summary="General Market News", tags=[TAG_NEWS])
+async def get_general_market_news(request: MarketNewsRequest = Depends()):
+    articles = await news_loader.fetch_market_news(request.limit, request.category)
+    query_str = "general market news" + (f", category: {request.category}" if request.category else "")
+    return MarketNewsResponse(source="Aggregated Market Sources", articles=articles, query=query_str, category=request.category)
 
-@app.get("/company/earnings/{symbol}", 
-         response_model=EarningsResponse,
-         summary="Fetch company earnings",
-         description="Fetches latest earnings data for a company by ticker symbol")
-async def get_company_earnings(
-    symbol: str = Path(..., description="Stock ticker symbol")
+@app.post("/filing/by-url", response_model=FilingResponse, summary="Fetch Single SEC Filing by URL", tags=[TAG_FILINGS])
+async def get_single_filing_by_url(request: FilingRequest): # Renamed endpoint for clarity
+    # sec_filing_loader._process_single_filing_url is the correct method here
+    return await sec_filing_loader._process_single_filing_url(str(request.filing_url))
+
+@app.get("/company/filings/{symbol}", response_model=CompanyFilingsResponse, summary="Company SEC Filings", tags=[TAG_FILINGS])
+async def get_company_sec_filings(
+    symbol: str = FastApiPath(..., description="Stock ticker symbol", min_length=1, max_length=10, pattern=r'^[A-Z0-9.\-]+$'),
+    form_type: Optional[str] = Query(None, description="SEC form types (e.g., '10-K,8-K')"),
+    limit: int = Query(5, description="Max filings", ge=1, le=15)
 ):
-    """
-    Fetch latest earnings data for a company.
+    filings = await sec_filing_loader.fetch_company_filings(symbol.upper(), form_type, limit)
     
-    Args:
-        symbol: Stock ticker symbol
+    company_name_val: Optional[str] = None
+    if filings and filings[0].company: company_name_val = filings[0].company
+    else: # Try profile lookup for company name
+        try: profile = await company_profile_loader.fetch_company_profile(symbol.upper()); company_name_val = profile.name
+        except ScrapingError: logger.debug(f"Profile fetch failed for {symbol}, company name may be missing in filings response.")
         
-    Returns:
-        EarningsResponse containing the earnings data
-    """
-    try:
-        return await earnings_loader.fetch_latest_earnings(symbol)
-    except Exception as e:
-        logger.error(f"Error in get_company_earnings: {str(e)}")
-        raise HTTPException(status_code=502, detail=f"Earnings scraping failed: {str(e)}")
+    return CompanyFilingsResponse(symbol=symbol.upper(), company_name=company_name_val, filings=filings)
 
-# Run the app if executed directly
+@app.get("/company/profile/{symbol}", response_model=CompanyProfileResponse, summary="Company Profile", tags=[TAG_COMPANY_DATA])
+async def get_company_profile_data(
+    symbol: str = FastApiPath(..., description="Stock ticker symbol", min_length=1, max_length=10, pattern=r'^[A-Z0-9.\-]+$')
+):
+    return await company_profile_loader.fetch_company_profile(symbol.upper())
+
+@app.get("/company/earnings/{symbol}", response_model=EarningsResponse, summary="Company Earnings Data", tags=[TAG_COMPANY_DATA])
+async def get_company_earnings_data(
+    symbol: str = FastApiPath(..., description="Stock ticker symbol", min_length=1, max_length=10, pattern=r'^[A-Z0-9.\-]+$')
+):
+    return await earnings_loader.fetch_latest_earnings(symbol.upper())
+
 if __name__ == "__main__":
     import uvicorn
-    
-    uvicorn.run(
-        "main:app",
-        host=settings.HOST,
-        port=settings.PORT,
-        reload=True,
-        log_level=settings.LOG_LEVEL.lower()
-    )
+    uvicorn.run("agents.scraping_agent.main:app", host=settings.HOST, port=settings.PORT, reload=True, log_level=settings.LOG_LEVEL.lower())

@@ -1,37 +1,41 @@
-"""
-Configuration for the Scraping Agent microservice.
-Uses pydantic-settings for type-safe environment variables.
-"""
-from pydantic_settings import BaseSettings
+# agents/scraping_agent/config.py
+# No significant changes needed. Ensure LOG_LEVEL is applied.
+
+from pydantic_settings import BaseSettings, SettingsConfigDict # Added SettingsConfigDict
 from typing import Optional
 from dotenv import load_dotenv
+import logging # Added
 
-# Load environment variables from .env file
 load_dotenv()
 
 class Settings(BaseSettings):
-    """Application settings with environment variables support."""
-    # Scraping settings
-    USER_AGENT: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    TIMEOUT: int = 10
-    MAX_RETRIES: int = 3
+    USER_AGENT: str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 FinAI/1.0" # More specific user agent
+    TIMEOUT: int = 15 # Increased default timeout slightly
+    MAX_RETRIES: int = 2 # Default retries for scraping operations (e.g., in extract_with_multiple_methods)
     
-    # API Keys
-    ALPHAVANTAGE_API_KEY: Optional[str] = None
-    SEC_API_KEY: Optional[str] = None
+    ALPHAVANTAGE_API_KEY: Optional[str] = None # Not directly used by this agent's current loaders
+    SEC_API_KEY: Optional[str] = None # Used as User-Agent for secedgar, should be an email.
+                                      # Format: "Sample Company Name AdminContact@<sample company domain>.com"
     
-    # Service settings
     HOST: str = "0.0.0.0"
-    PORT: int = 8001
-    LOG_LEVEL: str = "info"
+    PORT: int = 8002 # Original port was 8002, Orchestrator uses 8001. This should be 8002 based on Orchestrator config.
+    LOG_LEVEL: str = "INFO" # Default log level
     
-    # Pydantic v2+ configuration
-    model_config = {
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
-        "extra": "ignore",  # Ignore extra fields from env vars meant for other services
-        "case_sensitive": True
-    }
+    model_config = SettingsConfigDict( # Pydantic V2 style
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
-# Create settings instance
 settings = Settings()
+
+# Configure logging
+log_level_to_set = settings.LOG_LEVEL.upper()
+if not hasattr(logging, log_level_to_set):
+    logging.warning(f"Invalid LOG_LEVEL '{log_level_to_set}' in Scraping Agent settings. Defaulting to INFO.")
+    log_level_to_set = "INFO"
+
+logging.basicConfig(
+    level=getattr(logging, log_level_to_set),
+    format="%(asctime)s - %(name)s (SCRAPING_AGENT) - %(levelname)s - %(message)s"
+)
