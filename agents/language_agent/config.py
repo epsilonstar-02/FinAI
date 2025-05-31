@@ -1,114 +1,93 @@
-from pydantic_settings import BaseSettings
+# agents/language_agent/config.py
+# Primarily adding LOG_LEVEL application and minor path check improvements.
+
+from pydantic_settings import BaseSettings, SettingsConfigDict # Added SettingsConfigDict for Pydantic V2
 from dotenv import load_dotenv
 from enum import Enum
 from typing import Optional, Dict, List, Any, Union
 import os
 from pathlib import Path
+import logging # Added for log level validation
 
-# Load environment variables from .env file
 load_dotenv()
 
-
 class LLMProvider(str, Enum):
-    """Supported LLM providers"""
-    GOOGLE = "google"        # Google Generative AI (Gemini)
-    OPENAI = "openai"        # OpenAI (GPT models)
-    ANTHROPIC = "anthropic"  # Anthropic (Claude models)
-    LLAMA = "llama"          # Local Llama models
-    HUGGINGFACE = "huggingface"  # HuggingFace models
-    LANGCHAIN = "langchain"  # LangChain for model orchestration
+    GOOGLE = "google"
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    LLAMA = "llama"
+    HUGGINGFACE = "huggingface"
+    # LANGCHAIN provider was in original enum but not used in client. Keeping for now.
+    LANGCHAIN = "langchain"
 
 
 class Settings(BaseSettings):
-    """
-    Configuration settings for the Language Agent with multi-provider support.
-    
-    Attributes:
-        DEFAULT_PROVIDER: Default LLM provider to use
-        FALLBACK_PROVIDERS: List of providers to try if default fails
-        TIMEOUT: Request timeout in seconds
-        CACHE_RESPONSES: Whether to cache LLM responses
-        CACHE_TTL: Time-to-live for cached responses in seconds
-        
-        # Google settings
-        GEMINI_API_KEY: API key for Google Generative AI
-        GEMINI_MODEL: Model name for Gemini
-        
-        # OpenAI settings
-        OPENAI_API_KEY: API key for OpenAI
-        OPENAI_MODEL: OpenAI model to use
-        
-        # Anthropic settings
-        ANTHROPIC_API_KEY: API key for Anthropic
-        ANTHROPIC_MODEL: Anthropic model to use
-        
-        # Llama settings
-        LLAMA_MODEL_PATH: Path to Llama model
-        
-        # HuggingFace settings
-        HUGGINGFACE_API_KEY: API key for HuggingFace
-        HUGGINGFACE_MODEL: HuggingFace model to use
-        HUGGINGFACE_QUANTIZE: Quantization for local models
-    """
-    # Core settings - Prioritizing free and open-source options by default
-    DEFAULT_PROVIDER: LLMProvider = LLMProvider.LLAMA         # Default to local, free Llama model
-    FALLBACK_PROVIDERS: List[LLMProvider] = [LLMProvider.HUGGINGFACE]  # Fallback to HuggingFace (has free models)
-    TIMEOUT: int = 30
-    MAX_RETRIES: int = 3
-    RETRY_DELAY: int = 1
+    DEFAULT_PROVIDER: LLMProvider = LLMProvider.LLAMA
+    FALLBACK_PROVIDERS: List[LLMProvider] = [LLMProvider.HUGGINGFACE]
+    TIMEOUT: int = 30 # Default timeout for provider API calls
+    MAX_RETRIES: int = 2 # Reduced from 3 for faster fallback in some cases
+    RETRY_DELAY: int = 2 # Base delay seconds for exponential backoff
     CACHE_RESPONSES: bool = True
-    CACHE_TTL: int = 3600  # 1 hour
+    CACHE_TTL: int = 3600
     LOG_LEVEL: str = "INFO"
     
-    # Generation parameters
     MAX_TOKENS: int = 1024
     TEMPERATURE: float = 0.2
     TOP_P: float = 0.95
-    TOP_K: int = 40
+    TOP_K: int = 40 # Used by some providers like Gemini, HF
     
-    # Templates path
-    TEMPLATES_DIR: str = "prompts"
+    TEMPLATES_DIR: str = "prompts" # Relative to the package/module containing this config
     
-    # Free and Open-Source LLM settings
-    # Llama settings - Local, free and open-source
-    LLAMA_MODEL_PATH: str = "./models/llama/ggml-model-q4_0.bin"  # Default path to Llama model
+    # Llama specific
+    LLAMA_MODEL_PATH: str = os.getenv("LLAMA_MODEL_PATH", "./models/llama/ggml-model-q4_0.bin") # Allow override
     LLAMA_N_CTX: int = 2048
     LLAMA_N_BATCH: int = 512
-    LLAMA_USE_GPU: bool = False
+    LLAMA_USE_GPU: bool = False # Default to CPU for wider compatibility
     
-    # HuggingFace settings - Many free and open-source models available
-    HUGGINGFACE_API_KEY: Optional[str] = None              # Optional, can use without API key
-    HUGGINGFACE_MODEL: str = "mistralai/Mistral-7B-Instruct-v0.2"  # Free and open-source model
-    HUGGINGFACE_QUANTIZE: Optional[str] = "4bit"          # 4bit, 8bit, or None
-    HUGGINGFACE_USE_LOCAL: bool = True                    # Use local models by default
+    # HuggingFace specific
+    HUGGINGFACE_API_KEY: Optional[str] = None
+    HUGGINGFACE_MODEL: str = "mistralai/Mistral-7B-Instruct-v0.2"
+    HUGGINGFACE_QUANTIZE: Optional[str] = None # was "4bit", None is safer default if bitsandbytes not set up
+    HUGGINGFACE_USE_LOCAL: bool = True
     
-    # NOTE: The following are paid/commercial API services and are OPTIONAL
-    # If these API keys are not provided, system will use free and open-source alternatives only
-    
-    # Google Generative AI settings - Paid service
+    # Paid/Commercial - API keys default to None
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-flash"
+    GEMINI_MODEL: str = "gemini-1.5-flash"
     
-    # OpenAI settings - Paid service
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-3.5-turbo"
     OPENAI_ORGANIZATION: Optional[str] = None
     
-    # Anthropic settings - Paid service
     ANTHROPIC_API_KEY: Optional[str] = None
-    ANTHROPIC_MODEL: str = "claude-3-sonnet-20240229"
+    ANTHROPIC_MODEL: str = "claude-3-sonnet-20240229" # Example, claude-instant is cheaper
     
-    # LangChain settings
-    LANGCHAIN_CACHE: bool = True
+    # LangChain settings (if used more broadly)
+    LANGCHAIN_CACHE: bool = False # Defaulting to False as it might have its own cache system.
+
+    model_config = SettingsConfigDict( # Pydantic V2 style
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
     
-    model_config = {
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
-        "extra": "ignore",
-    }
-    
+    def _resolve_model_path(self, path_str: Optional[str]) -> Optional[Path]:
+        """Helper to resolve model paths relative to a base if needed, or ensure they exist."""
+        if not path_str:
+            return None
+        # Assuming paths in .env are absolute or relative to project root.
+        # For now, just convert to Path object.
+        # More sophisticated logic could try to resolve relative to a project base dir.
+        p = Path(path_str)
+        if p.exists():
+            return p
+        # Try resolving relative to a common "models" directory at project root if path is simple name
+        # This is just an example, real path resolution might need more context.
+        # For now, we'll rely on the path being correctly specified in env or default.
+        # logger.warning(f"Model path {path_str} does not exist as specified.")
+        return p # Return Path object even if it doesn't exist, check is done in is_provider_available
+
+
     def is_provider_available(self, provider: LLMProvider) -> bool:
-        """Check if a provider is available based on API keys"""
         if provider == LLMProvider.GOOGLE:
             return bool(self.GEMINI_API_KEY)
         elif provider == LLMProvider.OPENAI:
@@ -116,24 +95,45 @@ class Settings(BaseSettings):
         elif provider == LLMProvider.ANTHROPIC:
             return bool(self.ANTHROPIC_API_KEY)
         elif provider == LLMProvider.LLAMA:
-            return bool(self.LLAMA_MODEL_PATH) and Path(self.LLAMA_MODEL_PATH).exists()
+            llama_path = self._resolve_model_path(self.LLAMA_MODEL_PATH)
+            return bool(llama_path and llama_path.is_file())
         elif provider == LLMProvider.HUGGINGFACE:
             if self.HUGGINGFACE_USE_LOCAL:
-                return True
-            return bool(self.HUGGINGFACE_API_KEY)
+                # Availability depends on transformers/pytorch and valid model name.
+                # Actual loading error caught at runtime. Assume available if flag is set and model name provided.
+                return bool(self.HUGGINGFACE_MODEL)
+            return bool(self.HUGGINGFACE_API_KEY) # For API access
         elif provider == LLMProvider.LANGCHAIN:
-            # LangChain requires at least one other provider
-            return any(self.is_provider_available(p) for p in [
-                LLMProvider.GOOGLE, LLMProvider.OPENAI, 
-                LLMProvider.ANTHROPIC, LLMProvider.LLAMA,
-                LLMProvider.HUGGINGFACE
-            ])
+            # LangChain itself is a framework.
+            # Consider it "available" if it's installed and at least one underlying model it could use is configured.
+            # This check is simplified; real LangChain setup is more complex.
+            return any(self.is_provider_available(p) for p in LLMProvider if p != LLMProvider.LANGCHAIN)
         return False
     
     def get_available_providers(self) -> List[LLMProvider]:
-        """Get list of available providers"""
         return [p for p in LLMProvider if self.is_provider_available(p)]
 
-
-# Create settings instance
 settings = Settings()
+
+# Configure logging
+log_level_to_set = settings.LOG_LEVEL.upper()
+if not hasattr(logging, log_level_to_set):
+    # Use a temporary logger for this warning if main app logging isn't set up yet
+    temp_logger = logging.getLogger(__name__)
+    temp_logger.warning(f"Invalid LOG_LEVEL '{log_level_to_set}' in Language Agent settings. Defaulting to INFO.")
+    log_level_to_set = "INFO"
+
+logging.basicConfig(
+    level=getattr(logging, log_level_to_set),
+    format="%(asctime)s - %(name)s (LANG_AGENT) - %(levelname)s - %(message)s"
+)
+# Re-get logger after basicConfig
+logger = logging.getLogger(__name__)
+
+# Check Llama model path after logger is configured
+if settings.DEFAULT_PROVIDER == LLMProvider.LLAMA or LLMProvider.LLAMA in settings.FALLBACK_PROVIDERS:
+    if not settings.is_provider_available(LLMProvider.LLAMA):
+        logger.warning(
+            f"Llama provider is configured as default or fallback, but model path "
+            f"'{settings.LLAMA_MODEL_PATH}' does not exist or is not a file. Llama will be unavailable."
+        )

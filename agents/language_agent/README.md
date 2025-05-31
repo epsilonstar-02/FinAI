@@ -1,85 +1,44 @@
 # Language Agent
 
 ## Overview
-The Language Agent is a microservice in the FinAI multi-agent system that generates natural language text using Google's Gemini Flash model. It provides a FastAPI interface for generating text based on financial data and context.
+The Language Agent is a microservice designed for the FinAI multi-agent system. It provides a flexible and robust natural language text generation capability by supporting multiple Large Language Model (LLM) providers. It features fallback mechanisms, caching, and template-based prompting to generate financial insights, market briefs, or other text formats based on provided context.
 
 ## Features
-- Text generation using Google's Gemini Flash LLM
-- Template-based prompting with Jinja2
-- Market brief generation with financial context
-- Async API with proper error handling
-- Configurable model parameters
+- **Multi-Provider LLM Support:** Integrates with various LLM providers:
+    - Google Gemini
+    - OpenAI (GPT models)
+    - Anthropic (Claude models)
+    - Local Llama models (via LlamaCpp)
+    - HuggingFace models (local inference via `transformers` or via Inference API)
+- **Configurable Provider Priority:** Define a default provider and a list of fallback providers.
+- **Template-Based Prompting:** Uses Jinja2 for dynamic prompt construction.
+- **Response Caching:** Caches LLM responses to reduce latency and cost, with configurable TTL.
+- **Retry Mechanisms:** Implements retries with exponential backoff for individual provider calls.
+- **Per-Request Parameter Overrides:** Allows overriding default generation parameters (e.g., `max_tokens`, `temperature`) for specific requests.
+- **Asynchronous API:** Built with FastAPI for high performance.
+- **Comprehensive Configuration:** Settings managed via Pydantic and environment variables.
 
 ## Architecture
-The Language Agent follows a modular design with the following components:
-
-- **config.py**: Configuration settings using Pydantic
-- **models.py**: Request/response data models
-- **llm_client.py**: Google Generative AI client integration
-- **prompts/**: Jinja2 templates for text generation
-- **main.py**: FastAPI application with endpoints
+The Language Agent is structured as follows:
+- **`config.py`**: Pydantic-based configuration settings, loaded from environment variables and `.env` files.
+- **`models.py`**: Pydantic models for API request and response validation.
+- **`multi_llm_client.py`**: The core client for interacting with various LLM providers. Manages provider selection, retries, caching, and API calls.
+- **`prompts/`**: Directory containing Jinja2 templates for prompt engineering (e.g., `market_brief.tpl`).
+- **`main.py`**: FastAPI application defining API endpoints, middleware, and request handling.
 
 ## API Endpoints
 
 ### Health Check
 - **Endpoint**: `GET /health`
-- **Response**: `{"status": "ok", "agent": "Language Agent"}`
-
-### Generate Text
-- **Endpoint**: `POST /generate`
-- **Request Body**:
+- **Description**: Checks the operational status of the agent, lists available providers, default provider, and loaded templates.
+- **Response Example**:
   ```json
   {
-    "query": "What's the market outlook for AAPL?",
-    "context": {
-      "prices": "AAPL: $190.25 (+1.2%), MSFT: $420.10 (-0.5%)",
-      "news": "Apple announces new product line.",
-      "chunks": "Apple's revenue increased by 10% YoY.",
-      "analysis": "PE Ratio: 30.5, EPS: 6.24"
-    }
+    "status": "ok",
+    "agent": "Language Agent",
+    "version": "0.3.0",
+    "timestamp": "2023-10-27T10:00:00.000Z",
+    "providers": ["llama", "huggingface", "openai"],
+    "default_provider": "llama",
+    "templates": ["market_brief", "custom_summary"]
   }
-  ```
-- **Response**:
-  ```json
-  {
-    "text": "Apple's stock is showing positive momentum with a 1.2% gain, outperforming Microsoft which is down 0.5%. The recent product line announcement appears to be driving investor confidence, supported by strong fundamentals including a 10% year-over-year revenue growth. With a PE ratio of 30.5 and EPS of 6.24, Apple continues to demonstrate solid financial health despite broader market uncertainties."
-  }
-  ```
-
-## Configuration
-The Language Agent requires the following environment variables:
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| GEMINI_API_KEY | Google Cloud API key for Gemini access | (Required) |
-| GEMINI_MODEL | Gemini model name | "gemini-flash" |
-| TIMEOUT | Request timeout in seconds | 10 |
-
-## Deployment
-The Language Agent is containerized using Docker and integrated with the FinAI system through docker-compose. It runs on port 8004 internally and is exposed on port 8005.
-
-## Integration
-The Language Agent is integrated with the Orchestrator service, which coordinates the workflow between multiple agents. The Orchestrator communicates with the Language Agent through the URL specified in the `LANGUAGE_AGENT_URL` environment variable.
-
-## Development
-To run the Language Agent locally for development:
-
-```bash
-# Install dependencies
-pip install -r agents/language_agent/requirements-language.txt
-
-# Set environment variables
-export GEMINI_API_KEY=your_api_key
-export GEMINI_MODEL=gemini-flash
-export TIMEOUT=10
-
-# Run the service
-uvicorn agents.language_agent.main:app --reload
-```
-
-## Testing
-Unit tests are available in the `tests/agents/language_agent/` directory and can be run with pytest:
-
-```bash
-pytest tests/agents/language_agent/
-```
